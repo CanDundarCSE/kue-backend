@@ -1,4 +1,4 @@
-namespace Kue.Api.DTOs.Auth;
+namespace Kue.Api.Dtos.Auth;
 
 public record AuthResponseDto
 {
@@ -15,7 +15,6 @@ public record AuthUserDto
     public int Id { get; init; }
     public string Username { get; init; } = null!;
     public string Email { get; init; } = null!;
-    public string? DisplayName { get; init; }
     public string? AvatarUrl { get; init; }
     public IReadOnlyList<string> Roles { get; init; } = [];
 }

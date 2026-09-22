@@ -1,13 +1,86 @@
+using System.Threading.RateLimiting;
+using Kue.Api.Data;
+using Kue.Api.Entities;
+using Kue.Api.Extensions;
+using Kue.Api.Services;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ---------------------------------------------------------------------
+// 1. Database (PostgreSQL)
+// ---------------------------------------------------------------------
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// ---------------------------------------------------------------------
+// 2. Authentication services
+// ---------------------------------------------------------------------
+builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+
+builder.Services.Configure<IdentityOptions>(options =>
+{
+    options.Password.RequiredLength         = 8;
+    options.Password.RequireDigit           = true;
+    options.Password.RequireUppercase       = false;
+    options.Password.RequireNonAlphanumeric = false;
+
+    options.Lockout.DefaultLockoutTimeSpan  = TimeSpan.FromMinutes(15);
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.AllowedForNewUsers      = true;
+});
+
+// ---------------------------------------------------------------------
+// 3. Security & Middleware
+// ---------------------------------------------------------------------
+builder.Services.AddCorsPolicy();
+builder.Services.AddJwtAuthentication(builder.Configuration);
+
+// ---------------------------------------------------------------------
+// 4. Rate limiting
+// ---------------------------------------------------------------------
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetTokenBucketLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new TokenBucketRateLimiterOptions
+            {
+                TokenLimit          = 5,
+                TokensPerPeriod     = 5,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+                QueueLimit          = 0,
+                AutoReplenishment   = true
+            }));
+
+    options.AddPolicy("refresh", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window      = TimeSpan.FromMinutes(1),
+                QueueLimit  = 0
+            }));
+});
+
+// ---------------------------------------------------------------------
+// 5. Controllers / OpenAPI
+// ---------------------------------------------------------------------
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// ---------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -15,7 +88,14 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-app.MapControllers();
 
+app.UseCors(CorsExtensions.AllowFrontendPolicy);
+
+app.UseRateLimiter();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
 
 app.Run();
