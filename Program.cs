@@ -17,10 +17,13 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // ---------------------------------------------------------------------
-// 2. Authentication services
+// 2. Authentication and Media services
 // ---------------------------------------------------------------------
+builder.Services.AddHttpClient();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api.Services.Media.ExternalMediaService>();
+builder.Services.AddScoped<Kue.Api.Services.Media.IMediaService, Kue.Api.Services.Media.MediaService>();
 
 // ---------------------------------------------------------------------
 // 3. Security & Middleware

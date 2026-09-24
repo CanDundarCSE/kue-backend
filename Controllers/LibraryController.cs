@@ -17,10 +17,12 @@ namespace Kue.Api.Controllers;
 public class LibraryController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly Kue.Api.Services.Media.IMediaService _mediaService;
 
-    public LibraryController(AppDbContext context)
+    public LibraryController(AppDbContext context, Kue.Api.Services.Media.IMediaService mediaService)
     {
         _context = context;
+        _mediaService = mediaService;
     }
 
     [HttpGet]
@@ -87,14 +89,18 @@ public class LibraryController : ControllerBase
         var userId = GetCurrentUserId();
         if (userId is null) return Unauthorized();
 
-        var media = await _context.Media.FirstOrDefaultAsync(m => m.Id == request.MediaId, ct);
-        if (media is null)
+        Entities.Media media;
+        try
         {
-            return NotFound(new MessageResponseDto("Media not found in catalog."));
+            media = await _mediaService.GetOrCreateMediaAsync(request, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new MessageResponseDto(ex.Message));
         }
 
         var alreadyExists = await _context.LibraryEntries
-            .AnyAsync(e => e.UserId == userId.Value && e.MediaId == request.MediaId, ct);
+            .AnyAsync(e => e.UserId == userId.Value && e.MediaId == media.Id, ct);
         if (alreadyExists)
         {
             return BadRequest(new MessageResponseDto("This media is already in your library."));
@@ -122,7 +128,7 @@ public class LibraryController : ControllerBase
         var entry = new LibraryEntry
         {
             UserId = userId.Value,
-            MediaId = request.MediaId,
+            MediaId = media.Id,
             Status = normalizedStatus,
             Progress = initialProgress,
             Platform = media.MediaType == "game" ? request.Platform : null,
@@ -133,7 +139,15 @@ public class LibraryController : ControllerBase
         };
 
         _context.LibraryEntries.Add(entry);
-        await _context.SaveChangesAsync(ct);
+        try
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            _context.Entry(entry).State = EntityState.Detached;
+            return BadRequest(new MessageResponseDto("This media is already in your library."));
+        }
 
         entry.Media = media;
 

@@ -1,6 +1,9 @@
+using Kue.Api.Data;
 using Kue.Api.Dtos.Common;
 using Kue.Api.Dtos.Media;
+using Kue.Api.Services.Media;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace Kue.Api.Controllers;
 
@@ -9,108 +12,246 @@ namespace Kue.Api.Controllers;
 [Produces("application/json")]
 public class MediaController : ControllerBase
 {
+    private readonly AppDbContext _context;
+    private readonly IMediaService _mediaService;
+
+    public MediaController(AppDbContext context, IMediaService mediaService)
+    {
+        _context = context;
+        _mediaService = mediaService;
+    }
+
     [HttpGet]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetMedia(
+    public async Task<IActionResult> GetMedia(
         [FromQuery] string? type,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? genre = null,
         [FromQuery] int? year = null,
         [FromQuery] string? platform = null,
-        [FromQuery] string? status = null)
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
     {
-        var sampleItems = CreateSampleMediaList(type);
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
 
-        return Ok(new PagedResponseDto<MediaDto>
+        var query = _context.Media.AsNoTracking().AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(type))
         {
-            Items = sampleItems,
-            Page = page,
-            PageSize = pageSize,
-            TotalItems = sampleItems.Count,
-            TotalPages = 1
-        });
+            var normalizedType = type.Trim().ToLower();
+            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(genre))
+        {
+            query = query.Where(m => m.Genres.Contains(genre));
+        }
+
+        if (year.HasValue)
+        {
+            query = query.Where(m => m.Year == year.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var normalizedStatus = status.Trim().ToLower();
+            query = query.Where(m => m.Status != null && m.Status.ToLower() == normalizedStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(platform))
+        {
+            query = query.Where(m => m.Platforms != null && m.Platforms.Contains(platform));
+        }
+
+        var totalItems = await query.CountAsync(ct);
+
+        // If local DB has items or query parameters were passed, return local items
+        if (totalItems > 0 || !string.IsNullOrWhiteSpace(genre) || year.HasValue || !string.IsNullOrWhiteSpace(status) || !string.IsNullOrWhiteSpace(platform))
+        {
+            var entities = await query
+                .OrderByDescending(m => m.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(ct);
+
+            var items = entities.Select(MediaDto.FromEntity).ToList();
+
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = totalItems,
+                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
+            });
+        }
+
+        // Otherwise (fresh DB without catalog populated yet), fall back to trending from external service
+        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
+        return Ok(trending);
     }
 
     [HttpGet("{id:int}")]
     [ProducesResponseType(typeof(MediaDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
-    public IActionResult GetMediaById(int id)
+    public async Task<IActionResult> GetMediaById(int id, CancellationToken ct = default)
     {
-        var media = CreateSampleMediaItem(id, "anime");
+        var media = await _mediaService.GetMediaDetailsAsync(id, ct);
+        if (media == null)
+        {
+            return NotFound(new MessageResponseDto($"Media with ID {id} not found."));
+        }
+
         return Ok(media);
     }
 
     [HttpGet("trending")]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetTrendingMedia()
+    public async Task<IActionResult> GetTrendingMedia(
+        [FromQuery] string? type,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        var items = CreateSampleMediaList(null);
-        return Ok(new PagedResponseDto<MediaDto>
-        {
-            Items = items,
-            Page = 1,
-            PageSize = 20,
-            TotalItems = items.Count,
-            TotalPages = 1
-        });
+        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
+        return Ok(trending);
     }
 
     [HttpGet("popular")]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetPopularMedia()
+    public async Task<IActionResult> GetPopularMedia(
+        [FromQuery] string? type,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        var items = CreateSampleMediaList(null);
-        return Ok(new PagedResponseDto<MediaDto>
-        {
-            Items = items,
-            Page = 1,
-            PageSize = 20,
-            TotalItems = items.Count,
-            TotalPages = 1
-        });
+        var popular = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
+        return Ok(popular);
     }
 
     [HttpGet("top")]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetTopMedia()
+    public async Task<IActionResult> GetTopMedia(
+        [FromQuery] string? type,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        var items = CreateSampleMediaList(null);
-        return Ok(new PagedResponseDto<MediaDto>
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var query = _context.Media.AsNoTracking().Where(m => m.Score.HasValue);
+        if (!string.IsNullOrWhiteSpace(type))
         {
-            Items = items,
-            Page = 1,
-            PageSize = 20,
-            TotalItems = items.Count,
-            TotalPages = 1
-        });
+            var normalizedType = type.Trim().ToLower();
+            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        var totalItems = await query.CountAsync(ct);
+        if (totalItems > 0)
+        {
+            var entities = await query
+                .OrderByDescending(m => m.Score)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(ct);
+
+            var items = entities.Select(MediaDto.FromEntity).ToList();
+
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = totalItems,
+                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
+            });
+        }
+
+        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
+        return Ok(trending);
     }
 
     [HttpGet("upcoming")]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetUpcomingMedia()
+    public async Task<IActionResult> GetUpcomingMedia(
+        [FromQuery] string? type,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        var items = CreateSampleMediaList(null);
-        return Ok(new PagedResponseDto<MediaDto>
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var currentYear = DateTime.UtcNow.Year;
+        var query = _context.Media.AsNoTracking()
+            .Where(m => (m.Year.HasValue && m.Year.Value >= currentYear) || m.Status == "Upcoming" || m.Status == "Not Yet Aired");
+
+        if (!string.IsNullOrWhiteSpace(type))
         {
-            Items = items,
-            Page = 1,
-            PageSize = 20,
-            TotalItems = items.Count,
-            TotalPages = 1
-        });
+            var normalizedType = type.Trim().ToLower();
+            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        var totalItems = await query.CountAsync(ct);
+        if (totalItems > 0)
+        {
+            var entities = await query
+                .OrderBy(m => m.Year)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(ct);
+
+            var items = entities.Select(MediaDto.FromEntity).ToList();
+
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = totalItems,
+                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
+            });
+        }
+
+        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
+        return Ok(trending);
     }
 
     [HttpGet("{id:int}/similar")]
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
-    public IActionResult GetSimilar(int id)
+    public async Task<IActionResult> GetSimilar(int id, [FromQuery] int pageSize = 10, CancellationToken ct = default)
     {
-        var items = CreateSampleMediaList(null);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var media = await _context.Media.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id, ct);
+        if (media == null)
+        {
+            return Ok(new PagedResponseDto<MediaDto> { Page = 1, PageSize = pageSize, TotalItems = 0, TotalPages = 0 });
+        }
+
+        var query = _context.Media.AsNoTracking()
+            .Where(m => m.Id != id && m.MediaType == media.MediaType);
+
+        if (media.Genres.Count > 0)
+        {
+            var firstGenre = media.Genres[0];
+            query = query.Where(m => m.Genres.Contains(firstGenre));
+        }
+
+        var entities = await query
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        var items = entities.Select(MediaDto.FromEntity).ToList();
+
         return Ok(new PagedResponseDto<MediaDto>
         {
             Items = items,
             Page = 1,
-            PageSize = 10,
+            PageSize = pageSize,
             TotalItems = items.Count,
             TotalPages = 1
         });
@@ -119,99 +260,8 @@ public class MediaController : ControllerBase
     [HttpGet("{id:int}/details")]
     [ProducesResponseType(typeof(MediaDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
-    public IActionResult GetDetails(int id)
+    public async Task<IActionResult> GetDetails(int id, CancellationToken ct = default)
     {
-        var media = CreateSampleMediaItem(id, "game");
-        return Ok(media);
-    }
-
-    // --- Helpers for Scalar / OpenAPI Sample Generation ---
-
-    private static List<MediaDto> CreateSampleMediaList(string? requestedType)
-    {
-        return
-        [
-            new MediaDto
-            {
-                Id = 1,
-                MediaType = "anime",
-                ExternalSource = "anilist",
-                ExternalId = "154587",
-                Title = "Frieren: Beyond Journey's End",
-                OriginalTitle = "Sousou no Frieren",
-                Description = "During their decade-long quest to defeat the Demon King, the members of the hero's party...",
-                Year = 2023,
-                Score = 9.4,
-                Status = "Finished Airing",
-                Genres = ["Adventure", "Drama", "Fantasy"],
-                TotalUnits = 28,
-                UnitName = "Episodes",
-                TotalSeasons = 1
-            },
-            new MediaDto
-            {
-                Id = 2,
-                MediaType = "game",
-                ExternalSource = "igdb",
-                ExternalId = "119133",
-                Title = "Elden Ring",
-                Description = "THE NEW FANTASY ACTION RPG. Rise, Tarnished, and be guided by grace...",
-                Year = 2022,
-                Score = 9.6,
-                Status = "Released",
-                Genres = ["Action RPG", "Open World", "Dark Fantasy"],
-                Platforms = ["PC", "PlayStation 5", "PlayStation 4", "Xbox Series X/S", "Xbox One"],
-                Developer = "FromSoftware"
-            },
-            new MediaDto
-            {
-                Id = 3,
-                MediaType = "movie",
-                ExternalSource = "tmdb",
-                ExternalId = "157336",
-                Title = "Interstellar",
-                Description = "A team of explorers travel through a wormhole in space in an attempt to ensure humanity's survival.",
-                Year = 2014,
-                Score = 8.7,
-                Status = "Released",
-                Genres = ["Sci-Fi", "Drama", "Adventure"],
-                RuntimeMinutes = 169
-            },
-            new MediaDto
-            {
-                Id = 4,
-                MediaType = "manga",
-                ExternalSource = "anilist",
-                ExternalId = "30002",
-                Title = "Berserk",
-                Year = 1989,
-                Score = 9.5,
-                Status = "Releasing",
-                Genres = ["Action", "Adventure", "Dark Fantasy"],
-                TotalUnits = 376,
-                UnitName = "Chapters",
-                TotalVolumes = 42
-            }
-        ];
-    }
-
-    private static MediaDto CreateSampleMediaItem(int id, string type)
-    {
-        return new MediaDto
-        {
-            Id = id,
-            MediaType = type,
-            ExternalSource = type == "game" ? "igdb" : "anilist",
-            ExternalId = "100" + id,
-            Title = type == "game" ? "Elden Ring" : "Sample Media Title",
-            Year = 2023,
-            Score = 9.2,
-            Status = "Released",
-            Genres = ["Action", "Adventure"],
-            TotalUnits = type is "anime" or "series" or "manga" ? 24 : null,
-            UnitName = type == "manga" ? "Chapters" : (type is "anime" or "series" ? "Episodes" : null),
-            RuntimeMinutes = type == "movie" ? 135 : null,
-            Platforms = type == "game" ? ["PC", "PlayStation 5"] : null
-        };
+        return await GetMediaById(id, ct);
     }
 }

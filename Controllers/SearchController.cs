@@ -1,21 +1,43 @@
+using Kue.Api.Dtos.Media;
+using Kue.Api.Services.Media;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Kue.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/search")]
+[Produces("application/json")]
 public class SearchController : ControllerBase
 {
+    private readonly IMediaService _mediaService;
+
+    public SearchController(IMediaService mediaService)
+    {
+        _mediaService = mediaService;
+    }
+
     [HttpGet]
-    public IActionResult Search(
+    [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> Search(
         [FromQuery] string? query,
         [FromQuery] string? type,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20)
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        return Ok(new
+        if (string.IsNullOrWhiteSpace(query))
         {
-            message = "Search results retrieved successfully!"
-        });
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = [],
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = 0,
+                TotalPages = 0
+            });
+        }
+
+        var results = await _mediaService.SearchMediaAsync(query, type, page, pageSize, ct);
+        return Ok(results);
     }
 }

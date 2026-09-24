@@ -29,4 +29,31 @@ public class MediaDto
     // Game specific
     public List<string>? Platforms { get; set; } // ["PC", "PlayStation 5", "Xbox Series X", "Nintendo Switch"]
     public string? Developer { get; set; }
+
+    public static MediaDto FromEntity(Entities.Media media)
+    {
+        return new MediaDto
+        {
+            Id = media.Id,
+            MediaType = media.MediaType,
+            ExternalSource = media.ExternalSource,
+            ExternalId = media.ExternalId,
+            Title = media.Title,
+            OriginalTitle = media.OriginalTitle,
+            Description = media.Description,
+            CoverImage = media.CoverImage,
+            BannerImage = media.BannerImage,
+            Year = media.Year,
+            Score = media.Score,
+            Status = media.Status,
+            Genres = media.Genres,
+            TotalUnits = media.TotalUnits,
+            UnitName = media.UnitName,
+            TotalSeasons = media.TotalSeasons,
+            TotalVolumes = media.TotalVolumes,
+            RuntimeMinutes = media.RuntimeMinutes,
+            Platforms = media.Platforms,
+            Developer = media.Developer
+        };
+    }
 }
