@@ -1,4 +1,4 @@
-namespace Kue.Api.DTOs.Media;
+namespace Kue.Api.Dtos.Media;
 
 public class MediaReferenceDto
 {

@@ -1,6 +1,9 @@
-namespace Kue.Api.DTOs.Library;
+using System.ComponentModel.DataAnnotations;
+
+namespace Kue.Api.Dtos.Library;
 
 public class UpdateLibraryStatusRequest
 {
-    public string Status { get; set; } = null!;
+    [Required]
+    public string Status { get; set; } = null!; // "planning", "in_progress", "completed", "on_hold", "dropped"
 }

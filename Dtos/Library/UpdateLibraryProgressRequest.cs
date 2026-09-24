@@ -1,6 +1,10 @@
-namespace Kue.Api.DTOs.Library;
+using System.ComponentModel.DataAnnotations;
+
+namespace Kue.Api.Dtos.Library;
 
 public class UpdateLibraryProgressRequest
 {
-    public int Progress { get; set; }
+    [Required]
+    [Range(0, 100000, ErrorMessage = "Progress must be a non-negative number")]
+    public int Progress { get; set; } // Current episode or chapter count
 }
