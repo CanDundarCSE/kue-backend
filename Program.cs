@@ -22,18 +22,6 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 
-builder.Services.Configure<IdentityOptions>(options =>
-{
-    options.Password.RequiredLength         = 8;
-    options.Password.RequireDigit           = true;
-    options.Password.RequireUppercase       = false;
-    options.Password.RequireNonAlphanumeric = false;
-
-    options.Lockout.DefaultLockoutTimeSpan  = TimeSpan.FromMinutes(15);
-    options.Lockout.MaxFailedAccessAttempts = 5;
-    options.Lockout.AllowedForNewUsers      = true;
-});
-
 // ---------------------------------------------------------------------
 // 3. Security & Middleware
 // ---------------------------------------------------------------------

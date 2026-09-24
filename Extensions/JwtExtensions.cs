@@ -33,7 +33,7 @@ public static IServiceCollection AddJwtAuthentication(this IServiceCollection se
             {
                 OnMessageReceived = context =>
                 {
-                    if (context.Request.Cookies.TryGetValue("accessToken", out var token))
+                    if (context.Request.Cookies.TryGetValue("accessToken", out var token) && !string.IsNullOrWhiteSpace(token))
                     {
                         context.Token = token;
                     }

@@ -10,5 +10,8 @@ public class User
     public List<string> Roles { get; set; } = ["User"];
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    public string? PasswordResetToken { get; set; }
+    public DateTime? PasswordResetTokenExpiresAt { get; set; }
+
     public List<RefreshToken> RefreshTokens { get; set; } = [];
 }

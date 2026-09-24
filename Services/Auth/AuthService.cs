@@ -15,13 +15,13 @@ public class AuthService : IAuthService
 {
     private readonly AppDbContext _context;
     private readonly IConfiguration _configuration;
-    private readonly PasswordHasher<User> _passwordHasher;
+    private readonly IPasswordHasher<User> _passwordHasher;
 
-    public AuthService(AppDbContext context, IConfiguration configuration)
+    public AuthService(AppDbContext context, IConfiguration configuration, IPasswordHasher<User> passwordHasher)
     {
         _context = context;
         _configuration = configuration;
-        _passwordHasher = new PasswordHasher<User>();
+        _passwordHasher = passwordHasher;
     }
 
     public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
@@ -71,7 +71,16 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid credentials.");
         }
 
-        // 3. Response DTO hazırla & Refresh token DB'ye kaydet
+        // 3. Eski süresi geçmiş veya iptal edilmiş tokenları temizle
+        var obsoleteTokens = await _context.RefreshTokens
+            .Where(r => r.UserId == user.Id && (r.ExpiresAt <= DateTime.UtcNow || (r.IsRevoked && r.RevokedAt < DateTime.UtcNow.AddDays(-7))))
+            .ToListAsync(cancellationToken);
+        if (obsoleteTokens.Count > 0)
+        {
+            _context.RefreshTokens.RemoveRange(obsoleteTokens);
+        }
+
+        // 4. Response DTO hazırla & Refresh token DB'ye kaydet
         var userDto = MapToUserDto(user);
         var response = await GenerateAuthResponseAsync(userDto);
         await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, cancellationToken);
@@ -85,21 +94,46 @@ public class AuthService : IAuthService
         // 1. Refresh token'ı DB'de bul
         var storedToken = await _context.RefreshTokens
             .Include(r => r.User)
-            .FirstOrDefaultAsync(r => r.Token == refreshToken && !r.IsRevoked && r.ExpiresAt > DateTime.UtcNow, cancellationToken);
+            .FirstOrDefaultAsync(r => r.Token == refreshToken, cancellationToken);
 
         if (storedToken is null)
         {
-            throw new UnauthorizedAccessException("Invalid or expired refresh token.");
+            throw new UnauthorizedAccessException("Invalid refresh token.");
         }
 
-        // 2. Eski token'ı geçersiz kıl (One-time use security)
+        // 2. Token daha önce revoke edilmişse (Reuse Attack Detection - RFC 6749)
+        if (storedToken.IsRevoked)
+        {
+            // Olası bir token sızıntısı: Kullanıcının tüm aktif refresh token'larını iptal et!
+            var compromisedTokens = await _context.RefreshTokens
+                .Where(r => r.UserId == storedToken.UserId && !r.IsRevoked)
+                .ToListAsync(cancellationToken);
+
+            foreach (var token in compromisedTokens)
+            {
+                token.IsRevoked = true;
+                token.RevokedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            throw new UnauthorizedAccessException("Refresh token reuse detected. All active sessions have been revoked.");
+        }
+
+        // 3. Süresi geçmiş mi kontrol et
+        if (storedToken.ExpiresAt <= DateTime.UtcNow)
+        {
+            throw new UnauthorizedAccessException("Expired refresh token.");
+        }
+
+        // 4. Eski token'ı geçersiz kıl (One-time use / Token Rotation)
         storedToken.IsRevoked = true;
+        storedToken.RevokedAt = DateTime.UtcNow;
         
-        // 3. Yeni tokenlar üret
+        // 5. Yeni tokenlar üret
         var userDto = MapToUserDto(storedToken.User);
         var response = await GenerateAuthResponseAsync(userDto);
 
-        // 4. Yeni refresh token'ı DB'ye kaydet
+        // 6. Yeni refresh token'ı DB'ye kaydet
         await SaveRefreshTokenAsync(storedToken.UserId, response.RefreshToken!, cancellationToken);
         
         await _context.SaveChangesAsync(cancellationToken);
@@ -112,11 +146,101 @@ public class AuthService : IAuthService
         var storedToken = await _context.RefreshTokens
             .FirstOrDefaultAsync(r => r.Token == refreshToken, cancellationToken);
 
-        if (storedToken != null)
+        if (storedToken != null && !storedToken.IsRevoked)
         {
             storedToken.IsRevoked = true;
+            storedToken.RevokedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    public async Task ChangePasswordAsync(int userId, ChangePasswordRequest request, CancellationToken cancellationToken = default)
+    {
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
+        if (user is null)
+        {
+            throw new KeyNotFoundException("User not found.");
+        }
+
+        var verificationResult = _passwordHasher.VerifyHashedPassword(user, user.PasswordHash, request.CurrentPassword);
+        if (verificationResult != PasswordVerificationResult.Success)
+        {
+            throw new InvalidOperationException("Current password is incorrect.");
+        }
+
+        if (request.CurrentPassword == request.NewPassword)
+        {
+            throw new InvalidOperationException("New password must be different from current password.");
+        }
+
+        user.PasswordHash = _passwordHasher.HashPassword(user, request.NewPassword);
+
+        // Revoke all existing refresh tokens for security
+        var activeTokens = await _context.RefreshTokens
+            .Where(r => r.UserId == user.Id && !r.IsRevoked)
+            .ToListAsync(cancellationToken);
+
+        foreach (var token in activeTokens)
+        {
+            token.IsRevoked = true;
+            token.RevokedAt = DateTime.UtcNow;
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<string?> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
+
+        if (user is null)
+        {
+            // Do not reveal user existence
+            return null;
+        }
+
+        var tokenBytes = RandomNumberGenerator.GetBytes(32);
+        var resetToken = Convert.ToHexString(tokenBytes);
+
+        user.PasswordResetToken = resetToken;
+        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddHours(1);
+
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return resetToken;
+    }
+
+    public async Task ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
+
+        if (user is null 
+            || string.IsNullOrWhiteSpace(user.PasswordResetToken) 
+            || user.PasswordResetToken != request.Token 
+            || user.PasswordResetTokenExpiresAt is null 
+            || user.PasswordResetTokenExpiresAt <= DateTime.UtcNow)
+        {
+            throw new InvalidOperationException("Invalid or expired password reset token.");
+        }
+
+        user.PasswordHash = _passwordHasher.HashPassword(user, request.NewPassword);
+        user.PasswordResetToken = null;
+        user.PasswordResetTokenExpiresAt = null;
+
+        // Revoke active sessions
+        var activeTokens = await _context.RefreshTokens
+            .Where(r => r.UserId == user.Id && !r.IsRevoked)
+            .ToListAsync(cancellationToken);
+
+        foreach (var token in activeTokens)
+        {
+            token.IsRevoked = true;
+            token.RevokedAt = DateTime.UtcNow;
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     // --- Helper Methods ---
@@ -163,11 +287,13 @@ public class AuthService : IAuthService
 
     private async Task SaveRefreshTokenAsync(int userId, string token, CancellationToken ct)
     {
+        if (!int.TryParse(_configuration["Jwt:RefreshTokenExpirationDays"], out var expiryDays)) expiryDays = 7;
+
         var refreshTokenEntity = new RefreshToken
         {
             UserId = userId,
             Token = token,
-            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            ExpiresAt = DateTime.UtcNow.AddDays(expiryDays),
             IsRevoked = false,
             CreatedAt = DateTime.UtcNow
         };
