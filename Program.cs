@@ -20,6 +20,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // 2. Authentication and Media services
 // ---------------------------------------------------------------------
 builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api.Services.Media.ExternalMediaService>();
