@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Kue.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Kue.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260924105550_AddLibraryEntriesTable")]
+    partial class AddLibraryEntriesTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -115,9 +118,6 @@ namespace Kue.Api.Migrations
                     b.PrimitiveCollection<List<string>>("Genres")
                         .IsRequired()
                         .HasColumnType("text[]");
-
-                    b.Property<bool>("IsDeleted")
-                        .HasColumnType("boolean");
 
                     b.Property<string>("MediaType")
                         .IsRequired()
@@ -272,7 +272,7 @@ namespace Kue.Api.Migrations
                     b.HasOne("Kue.Api.Entities.Media", "Media")
                         .WithMany("LibraryEntries")
                         .HasForeignKey("MediaId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("Kue.Api.Entities.User", "User")

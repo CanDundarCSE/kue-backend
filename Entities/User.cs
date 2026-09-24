@@ -14,4 +14,5 @@ public class User
     public DateTime? PasswordResetTokenExpiresAt { get; set; }
 
     public List<RefreshToken> RefreshTokens { get; set; } = [];
+    public List<LibraryEntry> LibraryEntries { get; set; } = [];
 }

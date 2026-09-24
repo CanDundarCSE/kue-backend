@@ -33,4 +33,7 @@ public class Media
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
+    public bool IsDeleted { get; set; } = false;
+
+    public List<LibraryEntry> LibraryEntries { get; set; } = [];
 }

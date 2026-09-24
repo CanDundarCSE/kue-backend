@@ -10,6 +10,7 @@ public class AppDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Media> Media => Set<Media>();
+    public DbSet<LibraryEntry> LibraryEntries => Set<LibraryEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,6 +56,38 @@ public class AppDbContext : DbContext
             entity.Property(m => m.OriginalTitle).HasMaxLength(300);
             entity.Property(m => m.UnitName).HasMaxLength(50);
             entity.Property(m => m.Developer).HasMaxLength(150);
+
+            // Soft delete global filter
+            entity.HasQueryFilter(m => !m.IsDeleted);
+        });
+
+        modelBuilder.Entity<LibraryEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+
+            // One library entry per user per media
+            entity.HasIndex(e => new { e.UserId, e.MediaId }).IsUnique();
+
+            // Fast filtering by status and favorites
+            entity.HasIndex(e => new { e.UserId, e.Status });
+            entity.HasIndex(e => new { e.UserId, e.IsFavorite });
+
+            entity.Property(e => e.Status).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Platform).HasMaxLength(100);
+
+            entity.HasOne(e => e.User)
+                  .WithMany(u => u.LibraryEntries)
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // Restrict deletion of catalog media if user library records reference it
+            entity.HasOne(e => e.Media)
+                  .WithMany(m => m.LibraryEntries)
+                  .HasForeignKey(e => e.MediaId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // Matching query filter so soft-deleted media doesn't leave orphaned library entries in queries
+            entity.HasQueryFilter(e => !e.Media.IsDeleted);
         });
     }
 }
