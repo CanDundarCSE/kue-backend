@@ -14,6 +14,5 @@ public class AdminUserDto
     public DateTime CreatedAt { get; set; }
 
     public int LibraryCount { get; set; }
-    public int ReviewsCount { get; set; }
     public int ListsCount { get; set; }
 }

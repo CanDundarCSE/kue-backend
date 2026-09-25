@@ -128,7 +128,6 @@ public class AdminController : ControllerBase
                 Roles = u.Roles,
                 CreatedAt = u.CreatedAt,
                 LibraryCount = u.LibraryEntries.Count,
-                ReviewsCount = u.Reviews.Count,
                 ListsCount = u.CustomLists.Count
             })
             .ToListAsync(ct);
@@ -168,7 +167,6 @@ public class AdminController : ControllerBase
                 Roles = u.Roles,
                 CreatedAt = u.CreatedAt,
                 LibraryCount = u.LibraryEntries.Count,
-                ReviewsCount = u.Reviews.Count,
                 ListsCount = u.CustomLists.Count
             })
             .FirstOrDefaultAsync(ct);
@@ -200,7 +198,6 @@ public class AdminController : ControllerBase
 
         var user = await _context.Users
             .Include(u => u.LibraryEntries)
-            .Include(u => u.Reviews)
             .Include(u => u.CustomLists)
             .FirstOrDefaultAsync(u => u.Id == id, ct);
 
@@ -241,7 +238,6 @@ public class AdminController : ControllerBase
 
         var user = await _context.Users
             .Include(u => u.LibraryEntries)
-            .Include(u => u.Reviews)
             .Include(u => u.CustomLists)
             .FirstOrDefaultAsync(u => u.Id == id, ct);
 
@@ -528,7 +524,6 @@ public class AdminController : ControllerBase
             Roles = user.Roles,
             CreatedAt = user.CreatedAt,
             LibraryCount = user.LibraryEntries?.Count ?? 0,
-            ReviewsCount = user.Reviews?.Count ?? 0,
             ListsCount = user.CustomLists?.Count ?? 0
         };
     }

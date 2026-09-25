@@ -19,8 +19,6 @@ public class User
 
     public List<RefreshToken> RefreshTokens { get; set; } = [];
     public List<LibraryEntry> LibraryEntries { get; set; } = [];
-    public List<Review> Reviews { get; set; } = [];
-    public List<ReviewLike> ReviewLikes { get; set; } = [];
     public List<CustomList> CustomLists { get; set; } = [];
     public List<Friendship> SentFriendRequests { get; set; } = [];
     public List<Friendship> ReceivedFriendRequests { get; set; } = [];

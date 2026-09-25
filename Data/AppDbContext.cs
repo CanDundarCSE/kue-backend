@@ -11,8 +11,6 @@ public class AppDbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Media> Media => Set<Media>();
     public DbSet<LibraryEntry> LibraryEntries => Set<LibraryEntry>();
-    public DbSet<Review> Reviews => Set<Review>();
-    public DbSet<ReviewLike> ReviewLikes => Set<ReviewLike>();
     public DbSet<CustomList> CustomLists => Set<CustomList>();
     public DbSet<CustomListItem> CustomListItems => Set<CustomListItem>();
     public DbSet<Friendship> Friendships => Set<Friendship>();
@@ -98,49 +96,6 @@ public class AppDbContext : DbContext
 
             // Matching query filter so soft-deleted media doesn't leave orphaned library entries in queries
             entity.HasQueryFilter(e => !e.Media.IsDeleted);
-        });
-
-        modelBuilder.Entity<Review>(entity =>
-        {
-            entity.HasKey(r => r.Id);
-
-            // One review per user per media
-            entity.HasIndex(r => new { r.UserId, r.MediaId }).IsUnique();
-
-            entity.HasIndex(r => r.MediaId);
-            entity.HasIndex(r => r.LikesCount);
-            entity.HasIndex(r => r.CreatedAt);
-
-            entity.Property(r => r.Content).HasMaxLength(5000).IsRequired();
-
-            entity.HasOne(r => r.User)
-                  .WithMany(u => u.Reviews)
-                  .HasForeignKey(r => r.UserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(r => r.Media)
-                  .WithMany(m => m.Reviews)
-                  .HasForeignKey(r => r.MediaId)
-                  .OnDelete(DeleteBehavior.Restrict);
-
-            entity.HasQueryFilter(r => !r.Media.IsDeleted);
-        });
-
-        modelBuilder.Entity<ReviewLike>(entity =>
-        {
-            entity.HasKey(l => new { l.ReviewId, l.UserId });
-
-            entity.HasOne(l => l.Review)
-                  .WithMany(r => r.Likes)
-                  .HasForeignKey(l => l.ReviewId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(l => l.User)
-                  .WithMany(u => u.ReviewLikes)
-                  .HasForeignKey(l => l.UserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasQueryFilter(l => !l.Review.Media.IsDeleted);
         });
 
         modelBuilder.Entity<CustomList>(entity =>

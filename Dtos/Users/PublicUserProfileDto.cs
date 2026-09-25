@@ -24,6 +24,5 @@ public class UserProfileCountsDto
     public int FavoritesCount { get; set; }
 
     public int ListsCount { get; set; }
-    public int ReviewsCount { get; set; }
     public int RatingsCount { get; set; }
 }

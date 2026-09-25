@@ -157,6 +157,7 @@ public class ListsController : ControllerBase
     /// Create a new custom list for the current user.
     /// </summary>
     [HttpPost("me/lists")]
+    [HttpPost("lists")]
     [Authorize]
     [ProducesResponseType(typeof(CustomListDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

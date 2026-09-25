@@ -36,6 +36,5 @@ public class Media
     public bool IsDeleted { get; set; } = false;
 
     public List<LibraryEntry> LibraryEntries { get; set; } = [];
-    public List<Review> Reviews { get; set; } = [];
     public List<CustomListItem> CustomListItems { get; set; } = [];
 }

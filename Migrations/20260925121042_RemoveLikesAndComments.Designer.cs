@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Kue.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Kue.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925121042_RemoveLikesAndComments")]
+    partial class RemoveLikesAndComments
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -388,6 +391,49 @@ namespace Kue.Api.Migrations
                     b.ToTable("RefreshTokens");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("ContainsSpoilers")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(5000)
+                        .HasColumnType("character varying(5000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("MediaId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("Rating")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("MediaId");
+
+                    b.HasIndex("UserId", "MediaId")
+                        .IsUnique();
+
+                    b.ToTable("Reviews");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
                 {
                     b.Property<int>("Id")
@@ -554,6 +600,25 @@ namespace Kue.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.Media", "Media")
+                        .WithMany("Reviews")
+                        .HasForeignKey("MediaId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("Reviews")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Media");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.CustomList", b =>
                 {
                     b.Navigation("Items");
@@ -564,6 +629,8 @@ namespace Kue.Api.Migrations
                     b.Navigation("CustomListItems");
 
                     b.Navigation("LibraryEntries");
+
+                    b.Navigation("Reviews");
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
@@ -577,6 +644,8 @@ namespace Kue.Api.Migrations
                     b.Navigation("ReceivedFriendRequests");
 
                     b.Navigation("RefreshTokens");
+
+                    b.Navigation("Reviews");
 
                     b.Navigation("SentFriendRequests");
 

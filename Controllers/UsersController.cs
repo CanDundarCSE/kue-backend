@@ -5,7 +5,6 @@ using Kue.Api.Dtos.Library;
 using Kue.Api.Dtos.Lists;
 using Kue.Api.Dtos.Media;
 using Kue.Api.Dtos.Ratings;
-using Kue.Api.Dtos.Reviews;
 using Kue.Api.Dtos.Stats;
 using Kue.Api.Dtos.Users;
 using Kue.Api.Entities;
@@ -82,7 +81,6 @@ public class UsersController : ControllerBase
 
         // Only count public lists unless self
         var listsCount = await _context.CustomLists.CountAsync(l => l.UserId == user.Id && (isSelf || l.IsPublic), ct);
-        var reviewsCount = await _context.Reviews.CountAsync(r => r.UserId == user.Id, ct);
 
         dto.Counts = new UserProfileCountsDto
         {
@@ -94,7 +92,6 @@ public class UsersController : ControllerBase
             DroppedItems = dropped,
             FavoritesCount = favorites,
             ListsCount = listsCount,
-            ReviewsCount = reviewsCount,
             RatingsCount = ratingsCount
         };
 
@@ -315,95 +312,6 @@ public class UsersController : ControllerBase
         return Ok(new PagedResponseDto<UserRatingDto>
         {
             Items = entries,
-            Page = page,
-            PageSize = pageSize,
-            TotalItems = totalItems,
-            TotalPages = (int)Math.Ceiling((double)totalItems / pageSize)
-        });
-    }
-
-    /// <summary>
-    /// Get reviews written by the specified user. If profile is private, requires mutual friendship.
-    /// </summary>
-    [HttpGet("{username}/reviews")]
-    [ProducesResponseType(typeof(PagedResponseDto<ReviewDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetUserReviews(
-        string username,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken ct = default)
-    {
-        var normalizedUsername = username.Trim().ToLower();
-        var user = await _context.Users
-            .AsNoTracking()
-            .FirstOrDefaultAsync(u => u.Username.ToLower() == normalizedUsername, ct);
-
-        if (user is null)
-        {
-            return NotFound(new MessageResponseDto($"User '{username}' was not found."));
-        }
-
-        var currentUserId = GetCurrentUserId();
-        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
-
-        if (user.IsPrivate && !isSelf && !isMutualFriend)
-        {
-            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their reviews."));
-        }
-
-        if (page < 1) page = 1;
-        if (pageSize is < 1 or > 50) pageSize = 20;
-
-        var query = _context.Reviews
-            .AsNoTracking()
-            .Include(r => r.Media)
-            .Where(r => r.UserId == user.Id);
-
-        var totalItems = await query.CountAsync(ct);
-
-        var reviews = await query
-            .OrderByDescending(r => r.CreatedAt)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync(ct);
-
-        var likedReviewIds = new HashSet<int>();
-        if (currentUserId.HasValue && reviews.Count > 0)
-        {
-            var reviewIds = reviews.Select(r => r.Id).ToList();
-            var liked = await _context.ReviewLikes
-                .AsNoTracking()
-                .Where(l => l.UserId == currentUserId.Value && reviewIds.Contains(l.ReviewId))
-                .Select(l => l.ReviewId)
-                .ToListAsync(ct);
-
-            likedReviewIds = [.. liked];
-        }
-
-        var dtos = reviews.Select(r => new ReviewDto
-        {
-            Id = r.Id,
-            UserId = user.Id,
-            Username = user.Username,
-            MediaId = r.Media.Id,
-            MediaTitle = r.Media.Title,
-            MediaType = r.Media.MediaType,
-            MediaCoverImage = r.Media.CoverImage,
-            MediaYear = r.Media.Year,
-            Content = r.Content,
-            Rating = r.Rating,
-            ContainsSpoilers = r.ContainsSpoilers,
-            LikesCount = r.LikesCount,
-            IsLikedByCurrentUser = likedReviewIds.Contains(r.Id),
-            CreatedAt = r.CreatedAt,
-            UpdatedAt = r.UpdatedAt
-        }).ToList();
-
-        return Ok(new PagedResponseDto<ReviewDto>
-        {
-            Items = dtos,
             Page = page,
             PageSize = pageSize,
             TotalItems = totalItems,

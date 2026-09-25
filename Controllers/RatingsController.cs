@@ -114,16 +114,6 @@ public class RatingsController : ControllerBase
             _context.LibraryEntries.Add(entry);
         }
 
-        // Sync with existing review if one exists
-        var existingReview = await _context.Reviews
-            .FirstOrDefaultAsync(r => r.UserId == userId.Value && r.MediaId == mediaId, ct);
-
-        if (existingReview != null)
-        {
-            existingReview.Rating = request.Rating;
-            existingReview.UpdatedAt = DateTime.UtcNow;
-        }
-
         await _context.SaveChangesAsync(ct);
 
         return Ok(new
@@ -154,15 +144,6 @@ public class RatingsController : ControllerBase
 
         entry.Rating = null;
         entry.UpdatedAt = DateTime.UtcNow;
-
-        var existingReview = await _context.Reviews
-            .FirstOrDefaultAsync(r => r.UserId == userId.Value && r.MediaId == mediaId, ct);
-
-        if (existingReview != null)
-        {
-            existingReview.Rating = null;
-            existingReview.UpdatedAt = DateTime.UtcNow;
-        }
 
         await _context.SaveChangesAsync(ct);
 

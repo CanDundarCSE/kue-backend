@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Kue.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Kue.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925115226_AddCommentsTables")]
+    partial class AddCommentsTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -189,6 +192,40 @@ namespace Kue.Api.Migrations
                     b.HasIndex("UserId", "Status");
 
                     b.ToTable("LibraryEntries");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ListComment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("CustomListId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("CustomListId", "CreatedAt");
+
+                    b.ToTable("ListComments");
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.Media", b =>
@@ -388,6 +425,106 @@ namespace Kue.Api.Migrations
                     b.ToTable("RefreshTokens");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("ContainsSpoilers")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(5000)
+                        .HasColumnType("character varying(5000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LikesCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MediaId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("Rating")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("LikesCount");
+
+                    b.HasIndex("MediaId");
+
+                    b.HasIndex("UserId", "MediaId")
+                        .IsUnique();
+
+                    b.ToTable("Reviews");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ReviewComment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ReviewId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("ReviewId", "CreatedAt");
+
+                    b.ToTable("ReviewComments");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ReviewLike", b =>
+                {
+                    b.Property<int>("ReviewId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("ReviewId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("ReviewLikes");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
                 {
                     b.Property<int>("Id")
@@ -524,6 +661,25 @@ namespace Kue.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.ListComment", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.CustomList", "CustomList")
+                        .WithMany("Comments")
+                        .HasForeignKey("CustomListId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("ListComments")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("CustomList");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.Notification", b =>
                 {
                     b.HasOne("Kue.Api.Entities.User", "Actor")
@@ -554,8 +710,67 @@ namespace Kue.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.Media", "Media")
+                        .WithMany("Reviews")
+                        .HasForeignKey("MediaId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("Reviews")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Media");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ReviewComment", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.Review", "Review")
+                        .WithMany("Comments")
+                        .HasForeignKey("ReviewId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("ReviewComments")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Review");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ReviewLike", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.Review", "Review")
+                        .WithMany("Likes")
+                        .HasForeignKey("ReviewId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("ReviewLikes")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Review");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.CustomList", b =>
                 {
+                    b.Navigation("Comments");
+
                     b.Navigation("Items");
                 });
 
@@ -564,6 +779,15 @@ namespace Kue.Api.Migrations
                     b.Navigation("CustomListItems");
 
                     b.Navigation("LibraryEntries");
+
+                    b.Navigation("Reviews");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.Navigation("Comments");
+
+                    b.Navigation("Likes");
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
@@ -572,11 +796,19 @@ namespace Kue.Api.Migrations
 
                     b.Navigation("LibraryEntries");
 
+                    b.Navigation("ListComments");
+
                     b.Navigation("Notifications");
 
                     b.Navigation("ReceivedFriendRequests");
 
                     b.Navigation("RefreshTokens");
+
+                    b.Navigation("ReviewComments");
+
+                    b.Navigation("ReviewLikes");
+
+                    b.Navigation("Reviews");
 
                     b.Navigation("SentFriendRequests");
 
