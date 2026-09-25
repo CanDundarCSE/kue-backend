@@ -8,6 +8,9 @@ public class User
     public string PasswordHash { get; set; } = null!;
     public string? Bio { get; set; }
     public bool IsPrivate { get; set; } = false;
+    public bool IsBanned { get; set; } = false;
+    public string? BanReason { get; set; }
+    public DateTime? BannedAt { get; set; }
     public List<string> Roles { get; set; } = ["User"];
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

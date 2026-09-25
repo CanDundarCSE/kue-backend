@@ -71,6 +71,12 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid credentials.");
         }
 
+        if (user.IsBanned)
+        {
+            var reason = string.IsNullOrWhiteSpace(user.BanReason) ? "Your account has been suspended." : $"Your account has been suspended: {user.BanReason}";
+            throw new UnauthorizedAccessException(reason);
+        }
+
         // 3. Eski süresi geçmiş veya iptal edilmiş tokenları temizle
         var obsoleteTokens = await _context.RefreshTokens
             .Where(r => r.UserId == user.Id && (r.ExpiresAt <= DateTime.UtcNow || (r.IsRevoked && r.RevokedAt < DateTime.UtcNow.AddDays(-7))))
@@ -99,6 +105,11 @@ public class AuthService : IAuthService
         if (storedToken is null)
         {
             throw new UnauthorizedAccessException("Invalid refresh token.");
+        }
+
+        if (storedToken.User.IsBanned)
+        {
+            throw new UnauthorizedAccessException("Your account has been suspended.");
         }
 
         // 2. Token daha önce revoke edilmişse (Reuse Attack Detection - RFC 6749)
