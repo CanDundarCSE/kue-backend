@@ -7,7 +7,6 @@ public class ReviewDto
     // User info
     public int UserId { get; set; }
     public string Username { get; set; } = null!;
-    public string? UserAvatarUrl { get; set; }
 
     // Media info
     public int MediaId { get; set; }

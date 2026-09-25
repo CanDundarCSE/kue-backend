@@ -5,7 +5,6 @@ public class CustomListDto
     public int Id { get; set; }
     public int UserId { get; set; }
     public string Username { get; set; } = null!;
-    public string? UserAvatarUrl { get; set; }
 
     public string Name { get; set; } = null!;
     public string? Description { get; set; }

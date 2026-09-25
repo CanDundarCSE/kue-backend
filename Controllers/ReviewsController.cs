@@ -365,7 +365,6 @@ public class ReviewsController : ControllerBase
             Id = review.Id,
             UserId = author.Id,
             Username = author.Username,
-            UserAvatarUrl = author.AvatarUrl,
             MediaId = media.Id,
             MediaTitle = media.Title,
             MediaType = media.MediaType,

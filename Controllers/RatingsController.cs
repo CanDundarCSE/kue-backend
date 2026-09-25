@@ -210,7 +210,6 @@ public class RatingsController : ControllerBase
         {
             UserId = e.UserId,
             Username = e.User.Username,
-            AvatarUrl = e.User.AvatarUrl,
             Rating = e.Rating!.Value,
             RatedAt = e.UpdatedAt ?? e.AddedAt
         }).ToList();

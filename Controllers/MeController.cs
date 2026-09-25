@@ -47,7 +47,7 @@ public class MeController : ControllerBase
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
-            AvatarUrl = user.AvatarUrl,
+            Bio = user.Bio,
             Roles = user.Roles,
             CreatedAt = user.CreatedAt
         });
@@ -82,9 +82,9 @@ public class MeController : ControllerBase
             user.Username = request.Username.Trim();
         }
 
-        if (request.AvatarUrl is not null)
+        if (request.Bio is not null)
         {
-            user.AvatarUrl = string.IsNullOrWhiteSpace(request.AvatarUrl) ? null : request.AvatarUrl.Trim();
+            user.Bio = string.IsNullOrWhiteSpace(request.Bio) ? null : request.Bio.Trim();
         }
 
         await _context.SaveChangesAsync(ct);
@@ -94,7 +94,7 @@ public class MeController : ControllerBase
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
-            AvatarUrl = user.AvatarUrl,
+            Bio = user.Bio,
             Roles = user.Roles,
             CreatedAt = user.CreatedAt
         });

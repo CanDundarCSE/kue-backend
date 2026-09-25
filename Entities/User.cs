@@ -6,7 +6,7 @@ public class User
     public string Username { get; set; } = null!;
     public string Email { get; set; } = null!;
     public string PasswordHash { get; set; } = null!;
-    public string? AvatarUrl { get; set; }
+    public string? Bio { get; set; }
     public List<string> Roles { get; set; } = ["User"];
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

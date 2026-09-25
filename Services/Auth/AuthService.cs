@@ -307,7 +307,7 @@ public class AuthService : IAuthService
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
-            AvatarUrl = user.AvatarUrl,
+            Bio = user.Bio,
             Roles = user.Roles ?? new List<string> { "User" }
         };
     }
