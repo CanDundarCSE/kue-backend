@@ -37,4 +37,5 @@ public class Media
 
     public List<LibraryEntry> LibraryEntries { get; set; } = [];
     public List<Review> Reviews { get; set; } = [];
+    public List<CustomListItem> CustomListItems { get; set; } = [];
 }

@@ -17,4 +17,5 @@ public class User
     public List<LibraryEntry> LibraryEntries { get; set; } = [];
     public List<Review> Reviews { get; set; } = [];
     public List<ReviewLike> ReviewLikes { get; set; } = [];
+    public List<CustomList> CustomLists { get; set; } = [];
 }

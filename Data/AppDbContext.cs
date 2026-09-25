@@ -13,6 +13,8 @@ public class AppDbContext : DbContext
     public DbSet<LibraryEntry> LibraryEntries => Set<LibraryEntry>();
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<ReviewLike> ReviewLikes => Set<ReviewLike>();
+    public DbSet<CustomList> CustomLists => Set<CustomList>();
+    public DbSet<CustomListItem> CustomListItems => Set<CustomListItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -133,6 +135,45 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasQueryFilter(l => !l.Review.Media.IsDeleted);
+        });
+
+        modelBuilder.Entity<CustomList>(entity =>
+        {
+            entity.HasKey(l => l.Id);
+            entity.Property(l => l.Name).HasMaxLength(150).IsRequired();
+            entity.Property(l => l.Description).HasMaxLength(1000);
+
+            entity.HasIndex(l => l.UserId);
+            entity.HasIndex(l => l.IsPublic);
+            entity.HasIndex(l => l.CreatedAt);
+
+            entity.HasOne(l => l.User)
+                  .WithMany(u => u.CustomLists)
+                  .HasForeignKey(l => l.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<CustomListItem>(entity =>
+        {
+            entity.HasKey(i => i.Id);
+
+            // One entry per media per list
+            entity.HasIndex(i => new { i.ListId, i.MediaId }).IsUnique();
+            entity.HasIndex(i => new { i.ListId, i.Order });
+
+            entity.Property(i => i.Notes).HasMaxLength(500);
+
+            entity.HasOne(i => i.List)
+                  .WithMany(l => l.Items)
+                  .HasForeignKey(i => i.ListId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(i => i.Media)
+                  .WithMany(m => m.CustomListItems)
+                  .HasForeignKey(i => i.MediaId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasQueryFilter(i => !i.Media.IsDeleted);
         });
     }
 }
