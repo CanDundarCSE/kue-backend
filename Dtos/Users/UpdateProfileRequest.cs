@@ -7,5 +7,7 @@ public record UpdateProfileRequest(
     string? Username,
 
     [MaxLength(500, ErrorMessage = "Bio must not exceed 500 characters")]
-    string? Bio
+    string? Bio,
+
+    bool? IsPrivate
 );

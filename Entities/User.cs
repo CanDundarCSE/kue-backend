@@ -7,6 +7,7 @@ public class User
     public string Email { get; set; } = null!;
     public string PasswordHash { get; set; } = null!;
     public string? Bio { get; set; }
+    public bool IsPrivate { get; set; } = false;
     public List<string> Roles { get; set; } = ["User"];
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
@@ -18,4 +19,6 @@ public class User
     public List<Review> Reviews { get; set; } = [];
     public List<ReviewLike> ReviewLikes { get; set; } = [];
     public List<CustomList> CustomLists { get; set; } = [];
+    public List<Friendship> SentFriendRequests { get; set; } = [];
+    public List<Friendship> ReceivedFriendRequests { get; set; } = [];
 }

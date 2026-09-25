@@ -31,7 +31,7 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get public profile of a user by username, including summary tracking counts.
+    /// Get public profile of a user by username. If profile is private and visitor is not a mutual friend, detailed counts are locked.
     /// </summary>
     [HttpGet("{username}")]
     [ProducesResponseType(typeof(PublicUserProfileDto), StatusCodes.Status200OK)]
@@ -48,6 +48,27 @@ public class UsersController : ControllerBase
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
         }
 
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, friendshipStatus) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        var dto = new PublicUserProfileDto
+        {
+            Id = user.Id,
+            Username = user.Username,
+            Bio = user.Bio,
+            IsPrivate = user.IsPrivate,
+            IsFriend = isMutualFriend,
+            FriendshipStatus = friendshipStatus,
+            JoinedAt = user.CreatedAt
+        };
+
+        // If profile is private and visitor is neither the user themselves nor a mutual friend, lock detailed counts
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            dto.Counts = null;
+            return Ok(dto);
+        }
+
         var libraryQuery = _context.LibraryEntries.Where(e => e.UserId == user.Id);
 
         var totalItems = await libraryQuery.CountAsync(ct);
@@ -59,38 +80,33 @@ public class UsersController : ControllerBase
         var favorites = await libraryQuery.CountAsync(e => e.IsFavorite, ct);
         var ratingsCount = await libraryQuery.CountAsync(e => e.Rating != null, ct);
 
-        var listsCount = await _context.CustomLists.CountAsync(l => l.UserId == user.Id && l.IsPublic, ct);
+        // Only count public lists unless self
+        var listsCount = await _context.CustomLists.CountAsync(l => l.UserId == user.Id && (isSelf || l.IsPublic), ct);
         var reviewsCount = await _context.Reviews.CountAsync(r => r.UserId == user.Id, ct);
 
-        var dto = new PublicUserProfileDto
+        dto.Counts = new UserProfileCountsDto
         {
-            Id = user.Id,
-            Username = user.Username,
-            Bio = user.Bio,
-            JoinedAt = user.CreatedAt,
-            Counts = new UserProfileCountsDto
-            {
-                TotalLibraryItems = totalItems,
-                CompletedItems = completed,
-                InProgressItems = inProgress,
-                PlanningItems = planned,
-                OnHoldItems = onHold,
-                DroppedItems = dropped,
-                FavoritesCount = favorites,
-                ListsCount = listsCount,
-                ReviewsCount = reviewsCount,
-                RatingsCount = ratingsCount
-            }
+            TotalLibraryItems = totalItems,
+            CompletedItems = completed,
+            InProgressItems = inProgress,
+            PlanningItems = planned,
+            OnHoldItems = onHold,
+            DroppedItems = dropped,
+            FavoritesCount = favorites,
+            ListsCount = listsCount,
+            ReviewsCount = reviewsCount,
+            RatingsCount = ratingsCount
         };
 
         return Ok(dto);
     }
 
     /// <summary>
-    /// Get the public library entries of a user, with optional filters for media type and status.
+    /// Get the library entries of a user. If profile is private, requires mutual friendship.
     /// </summary>
     [HttpGet("{username}/library")]
     [ProducesResponseType(typeof(PagedResponseDto<LibraryEntryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserLibrary(
         string username,
@@ -108,6 +124,14 @@ public class UsersController : ControllerBase
         if (user is null)
         {
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their library."));
         }
 
         if (page < 1) page = 1;
@@ -150,10 +174,11 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get public custom lists created by the specified user.
+    /// Get custom lists of a user. If profile is private, requires mutual friendship. Private lists (isPublic: false) remain strictly visible to the owner only.
     /// </summary>
     [HttpGet("{username}/lists")]
     [ProducesResponseType(typeof(PagedResponseDto<CustomListDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserLists(
         string username,
@@ -171,12 +196,21 @@ public class UsersController : ControllerBase
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
         }
 
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their lists."));
+        }
+
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 50) pageSize = 20;
 
+        // Even for mutual friends, only return isPublic: true lists! Only the user themselves can view their private lists.
         var query = _context.CustomLists
             .AsNoTracking()
-            .Where(l => l.UserId == user.Id && l.IsPublic);
+            .Where(l => l.UserId == user.Id && (isSelf || l.IsPublic));
 
         var totalCount = await query.CountAsync(ct);
 
@@ -215,10 +249,11 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get ratings given by the specified user across their library entries.
+    /// Get ratings given by the specified user. If profile is private, requires mutual friendship.
     /// </summary>
     [HttpGet("{username}/ratings")]
     [ProducesResponseType(typeof(PagedResponseDto<UserRatingDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserRatings(
         string username,
@@ -235,6 +270,14 @@ public class UsersController : ControllerBase
         if (user is null)
         {
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their ratings."));
         }
 
         if (page < 1) page = 1;
@@ -280,10 +323,11 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get reviews written by the specified user.
+    /// Get reviews written by the specified user. If profile is private, requires mutual friendship.
     /// </summary>
     [HttpGet("{username}/reviews")]
     [ProducesResponseType(typeof(PagedResponseDto<ReviewDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserReviews(
         string username,
@@ -301,10 +345,16 @@ public class UsersController : ControllerBase
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
         }
 
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their reviews."));
+        }
+
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 50) pageSize = 20;
-
-        var currentUserId = GetCurrentUserId();
 
         var query = _context.Reviews
             .AsNoTracking()
@@ -319,7 +369,6 @@ public class UsersController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        // Determine if current user liked any of these reviews
         var likedReviewIds = new HashSet<int>();
         if (currentUserId.HasValue && reviews.Count > 0)
         {
@@ -363,10 +412,11 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get aggregated entertainment stats and media breakdowns for the specified user.
+    /// Get aggregated entertainment stats for the specified user. If profile is private, requires mutual friendship.
     /// </summary>
     [HttpGet("{username}/stats")]
     [ProducesResponseType(typeof(StatsOverviewDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserStats(string username, CancellationToken ct)
     {
@@ -378,6 +428,14 @@ public class UsersController : ControllerBase
         if (user is null)
         {
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their stats."));
         }
 
         var entries = await _context.LibraryEntries
@@ -417,10 +475,11 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Get favorite and tracked genres distribution for the specified user.
+    /// Get favorite and tracked genres distribution for the specified user. If profile is private, requires mutual friendship.
     /// </summary>
     [HttpGet("{username}/genres")]
     [ProducesResponseType(typeof(GenreStatsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserGenres(string username, CancellationToken ct)
     {
@@ -432,6 +491,14 @@ public class UsersController : ControllerBase
         if (user is null)
         {
             return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their genre stats."));
         }
 
         var entries = await _context.LibraryEntries
@@ -476,6 +543,32 @@ public class UsersController : ControllerBase
     {
         var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
         return int.TryParse(idClaim, out var id) ? id : null;
+    }
+
+    private async Task<(bool isSelf, bool isMutualFriend, string friendshipStatus)> GetRelationshipAsync(
+        int? currentUserId, int targetUserId, CancellationToken ct)
+    {
+        if (!currentUserId.HasValue) return (false, false, "none");
+        if (currentUserId.Value == targetUserId) return (true, false, "self");
+
+        var friendship = await _context.Friendships
+            .AsNoTracking()
+            .FirstOrDefaultAsync(f =>
+                (f.RequesterId == currentUserId.Value && f.AddresseeId == targetUserId) ||
+                (f.RequesterId == targetUserId && f.AddresseeId == currentUserId.Value), ct);
+
+        if (friendship == null) return (false, false, "none");
+
+        if (friendship.Status == "accepted") return (false, true, "accepted");
+
+        if (friendship.Status == "pending")
+        {
+            return friendship.RequesterId == currentUserId.Value
+                ? (false, false, "pending_sent")
+                : (false, false, "pending_received");
+        }
+
+        return (false, false, friendship.Status);
     }
 
     private static LibraryEntryDto MapLibraryEntryToDto(LibraryEntry entry)

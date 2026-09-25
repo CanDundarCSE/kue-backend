@@ -15,6 +15,7 @@ public class AppDbContext : DbContext
     public DbSet<ReviewLike> ReviewLikes => Set<ReviewLike>();
     public DbSet<CustomList> CustomLists => Set<CustomList>();
     public DbSet<CustomListItem> CustomListItems => Set<CustomListItem>();
+    public DbSet<Friendship> Friendships => Set<Friendship>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -28,6 +29,7 @@ public class AppDbContext : DbContext
             entity.Property(u => u.Email).HasMaxLength(256).IsRequired();
             entity.Property(u => u.Username).HasMaxLength(50).IsRequired();
             entity.Property(u => u.Bio).HasMaxLength(500);
+            entity.Property(u => u.IsPrivate).HasDefaultValue(false);
             entity.Property(u => u.PasswordResetToken).HasMaxLength(128);
         });
 
@@ -175,6 +177,26 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasQueryFilter(i => !i.Media.IsDeleted);
+        });
+
+        modelBuilder.Entity<Friendship>(entity =>
+        {
+            entity.HasKey(f => f.Id);
+            entity.HasIndex(f => new { f.RequesterId, f.AddresseeId }).IsUnique();
+            entity.HasIndex(f => new { f.AddresseeId, f.Status });
+            entity.HasIndex(f => new { f.RequesterId, f.Status });
+
+            entity.Property(f => f.Status).HasMaxLength(20).IsRequired();
+
+            entity.HasOne(f => f.Requester)
+                  .WithMany(u => u.SentFriendRequests)
+                  .HasForeignKey(f => f.RequesterId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(f => f.Addressee)
+                  .WithMany(u => u.ReceivedFriendRequests)
+                  .HasForeignKey(f => f.AddresseeId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

@@ -5,9 +5,12 @@ public class PublicUserProfileDto
     public int Id { get; set; }
     public string Username { get; set; } = null!;
     public string? Bio { get; set; }
+    public bool IsPrivate { get; set; }
+    public bool IsFriend { get; set; }
+    public string FriendshipStatus { get; set; } = "none"; // "none", "pending_sent", "pending_received", "accepted"
     public DateTime JoinedAt { get; set; }
 
-    public UserProfileCountsDto Counts { get; set; } = new();
+    public UserProfileCountsDto? Counts { get; set; }
 }
 
 public class UserProfileCountsDto

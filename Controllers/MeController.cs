@@ -48,6 +48,7 @@ public class MeController : ControllerBase
             Username = user.Username,
             Email = user.Email,
             Bio = user.Bio,
+            IsPrivate = user.IsPrivate,
             Roles = user.Roles,
             CreatedAt = user.CreatedAt
         });
@@ -87,6 +88,11 @@ public class MeController : ControllerBase
             user.Bio = string.IsNullOrWhiteSpace(request.Bio) ? null : request.Bio.Trim();
         }
 
+        if (request.IsPrivate.HasValue)
+        {
+            user.IsPrivate = request.IsPrivate.Value;
+        }
+
         await _context.SaveChangesAsync(ct);
 
         return Ok(new UserProfileDto
@@ -95,6 +101,7 @@ public class MeController : ControllerBase
             Username = user.Username,
             Email = user.Email,
             Bio = user.Bio,
+            IsPrivate = user.IsPrivate,
             Roles = user.Roles,
             CreatedAt = user.CreatedAt
         });
