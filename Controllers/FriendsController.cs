@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
+using Kue.Api.Services.Notifications;
+
 namespace Kue.Api.Controllers;
 
 [ApiController]
@@ -16,11 +18,13 @@ namespace Kue.Api.Controllers;
 public class FriendsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<FriendsController> _logger;
 
-    public FriendsController(AppDbContext context, ILogger<FriendsController> logger)
+    public FriendsController(AppDbContext context, INotificationService notificationService, ILogger<FriendsController> logger)
     {
         _context = context;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -76,6 +80,18 @@ public class FriendsController : ControllerBase
                 existing.Status = "accepted";
                 existing.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync(ct);
+
+                var senderUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+                await _notificationService.CreateNotificationAsync(
+                    userId: targetUser.Id,
+                    actorId: currentUserId.Value,
+                    type: "friend_request_accepted",
+                    title: "Arkadaşlık İsteği Kabul Edildi",
+                    message: $"{senderUser?.Username ?? "Bir kullanıcı"} ile artık karşılıklı arkadaşsınız!",
+                    referenceId: existing.Id,
+                    referenceType: "friendship",
+                    ct: ct);
+
                 return Ok(new MessageResponseDto($"Friend request from '{targetUser.Username}' automatically accepted. You are now mutual friends!"));
             }
 
@@ -86,6 +102,17 @@ public class FriendsController : ControllerBase
             existing.CreatedAt = DateTime.UtcNow;
             existing.UpdatedAt = null;
             await _context.SaveChangesAsync(ct);
+
+            var retrySender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+            await _notificationService.CreateNotificationAsync(
+                userId: targetUser.Id,
+                actorId: currentUserId.Value,
+                type: "friend_request_received",
+                title: "Yeni Arkadaşlık İsteği",
+                message: $"{retrySender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
+                referenceId: existing.Id,
+                referenceType: "friendship",
+                ct: ct);
 
             return StatusCode(StatusCodes.Status201Created, new MessageResponseDto($"Friend request sent to '{targetUser.Username}'."));
         }
@@ -100,6 +127,17 @@ public class FriendsController : ControllerBase
 
         _context.Friendships.Add(friendship);
         await _context.SaveChangesAsync(ct);
+
+        var freshSender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+        await _notificationService.CreateNotificationAsync(
+            userId: targetUser.Id,
+            actorId: currentUserId.Value,
+            type: "friend_request_received",
+            title: "Yeni Arkadaşlık İsteği",
+            message: $"{freshSender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
+            referenceId: friendship.Id,
+            referenceType: "friendship",
+            ct: ct);
 
         return StatusCode(StatusCodes.Status201Created, new MessageResponseDto($"Friend request sent to '{targetUser.Username}'."));
     }
@@ -140,6 +178,17 @@ public class FriendsController : ControllerBase
         request.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(ct);
+
+        var acceptorUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+        await _notificationService.CreateNotificationAsync(
+            userId: request.RequesterId,
+            actorId: currentUserId.Value,
+            type: "friend_request_accepted",
+            title: "Arkadaşlık İsteği Kabul Edildi",
+            message: $"{acceptorUser?.Username ?? "Arkadaşınız"} arkadaşlık isteğinizi kabul etti.",
+            referenceId: request.Id,
+            referenceType: "friendship",
+            ct: ct);
 
         var dto = new FriendDto
         {

@@ -24,4 +24,6 @@ public class User
     public List<CustomList> CustomLists { get; set; } = [];
     public List<Friendship> SentFriendRequests { get; set; } = [];
     public List<Friendship> ReceivedFriendRequests { get; set; } = [];
+    public List<Notification> Notifications { get; set; } = [];
+    public List<Notification> TriggeredNotifications { get; set; } = [];
 }

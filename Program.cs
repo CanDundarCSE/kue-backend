@@ -25,6 +25,7 @@ builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api.Services.Media.ExternalMediaService>();
 builder.Services.AddScoped<Kue.Api.Services.Media.IMediaService, Kue.Api.Services.Media.MediaService>();
+builder.Services.AddScoped<Kue.Api.Services.Notifications.INotificationService, Kue.Api.Services.Notifications.NotificationService>();
 
 // ---------------------------------------------------------------------
 // 3. Security & Middleware
@@ -63,9 +64,10 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // ---------------------------------------------------------------------
-// 5. Controllers / OpenAPI
+// 5. Controllers / OpenAPI / SignalR
 // ---------------------------------------------------------------------
 builder.Services.AddControllers();
+builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -89,5 +91,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<Kue.Api.Hubs.NotificationHub>("/hubs/notifications");
 
 app.Run();

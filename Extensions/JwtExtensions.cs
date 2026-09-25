@@ -33,10 +33,19 @@ public static IServiceCollection AddJwtAuthentication(this IServiceCollection se
             {
                 OnMessageReceived = context =>
                 {
-                    if (context.Request.Cookies.TryGetValue("accessToken", out var token) && !string.IsNullOrWhiteSpace(token))
+                    var accessToken = context.Request.Query["access_token"];
+                    var path = context.HttpContext.Request.Path;
+
+                    // SignalR WebSockets send JWT via query string '?access_token=...'
+                    if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                    {
+                        context.Token = accessToken;
+                    }
+                    else if (context.Request.Cookies.TryGetValue("accessToken", out var token) && !string.IsNullOrWhiteSpace(token))
                     {
                         context.Token = token;
                     }
+
                     return Task.CompletedTask;
                 }
             };

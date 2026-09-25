@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
+using Kue.Api.Services.Notifications;
+
 namespace Kue.Api.Controllers;
 
 [ApiController]
@@ -16,11 +18,13 @@ namespace Kue.Api.Controllers;
 public class ReviewsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<ReviewsController> _logger;
 
-    public ReviewsController(AppDbContext context, ILogger<ReviewsController> logger)
+    public ReviewsController(AppDbContext context, INotificationService notificationService, ILogger<ReviewsController> logger)
     {
         _context = context;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -284,7 +288,9 @@ public class ReviewsController : ControllerBase
         var userId = GetCurrentUserId();
         if (userId is null) return Unauthorized();
 
-        var review = await _context.Reviews.FirstOrDefaultAsync(r => r.Id == reviewId, ct);
+        var review = await _context.Reviews
+            .Include(r => r.Media)
+            .FirstOrDefaultAsync(r => r.Id == reviewId, ct);
         if (review is null)
         {
             return NotFound(new MessageResponseDto($"Review with ID {reviewId} not found."));
@@ -304,6 +310,21 @@ public class ReviewsController : ControllerBase
 
             review.LikesCount++;
             await _context.SaveChangesAsync(ct);
+
+            // Notify author if liker is someone else
+            if (review.UserId != userId.Value)
+            {
+                var likerUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId.Value, ct);
+                await _notificationService.CreateNotificationAsync(
+                    userId: review.UserId,
+                    actorId: userId.Value,
+                    type: "review_liked",
+                    title: "İncelemeniz Beğenildi",
+                    message: $"{likerUser?.Username ?? "Bir kullanıcı"} \"{review.Media.Title}\" hakkındaki incelemenizi beğendi.",
+                    referenceId: review.Id,
+                    referenceType: "review",
+                    ct: ct);
+            }
         }
 
         return Ok(new
