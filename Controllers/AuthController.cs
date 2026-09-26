@@ -93,6 +93,7 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("logout")]
+    [EnableRateLimiting("refresh")]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
     public async Task<IActionResult> Logout([FromBody] RefreshTokenRequest? request, CancellationToken ct)
     {
@@ -113,6 +114,7 @@ public class AuthController : ControllerBase
 
     [Authorize]
     [HttpPost("change-password")]
+    [EnableRateLimiting("auth")]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -139,6 +141,7 @@ public class AuthController : ControllerBase
         }
     }
 
+    [EnableRateLimiting("auth")]
     [HttpPost("forgot-password")]
     [ProducesResponseType(typeof(ForgotPasswordResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
@@ -154,7 +157,7 @@ public class AuthController : ControllerBase
             debugToken
         ));
     }
-
+    [EnableRateLimiting("auth")]
     [HttpPost("reset-password")]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
