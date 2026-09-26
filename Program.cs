@@ -2,6 +2,7 @@ using System.Threading.RateLimiting;
 using Kue.Api.Data;
 using Kue.Api.Entities;
 using Kue.Api.Extensions;
+using Kue.Api.Middlewares;
 using Kue.Api.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
@@ -75,6 +76,7 @@ var app = builder.Build();
 // ---------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------
+app.UseGlobalExceptionHandler();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();

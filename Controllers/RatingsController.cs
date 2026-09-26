@@ -173,10 +173,15 @@ public class RatingsController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
+        var currentUserId = GetCurrentUserId();
+
         var query = _context.LibraryEntries
             .AsNoTracking()
             .Include(e => e.User)
             .Where(e => e.MediaId == mediaId && e.Rating.HasValue);
+
+        // Privacy: Filter out ratings from private accounts, unless the requesting user is the owner
+        query = query.Where(e => !e.User.IsPrivate || (currentUserId.HasValue && e.UserId == currentUserId.Value));
 
         var totalItems = await query.CountAsync(ct);
         var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
