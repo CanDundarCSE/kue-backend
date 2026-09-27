@@ -46,6 +46,8 @@ Built with .NET 10, C# 13, PostgreSQL, Entity Framework Core, and ASP.NET Core S
 - Authentication: Short-lived JWT access tokens with secure HttpOnly refresh token cookies.
 - Token rotation and RFC 6749 reuse detection (automatic session revocation on replay attacks).
 - Brute-force protection: IP-based Token Bucket rate limiting on authentication routes.
+- Password reset: single-use 256-bit tokens stored only as SHA-256 hashes with a one-hour expiry, delivered by transactional email (Brevo) and never returned to clients outside development.
+- Timing-safe password reset: reset mail is dispatched through a background queue so a known address is not measurably slower to respond than an unknown one, and a per-user cooldown suppresses repeated mail to a single account.
 - Global exception handling middleware: sanitizes all unhandled server errors into standardized JSON to prevent stack trace or database structure leakage.
 - IDOR prevention: strict server-side ownership checks across library, list, rating, and notification actions.
 - Administrative controls: self-locking initial bootstrap endpoint (`/admin/bootstrap`), user role management, account suspension with ban reasons, and media catalog synchronization.
@@ -79,7 +81,7 @@ Kue.Api/
 ├── Hubs/                # SignalR WebSockets hubs
 ├── Middlewares/         # Global exception handling and error sanitization
 ├── Migrations/          # EF Core schema migrations
-├── Services/            # Core business logic (Auth, External APIs, Notifications)
+├── Services/            # Core business logic (Auth, External APIs, Notifications, Email, Background)
 ├── Program.cs           # Application entry point and HTTP pipeline
 └── appsettings.json     # Configuration file
 ```
@@ -123,6 +125,15 @@ Configure your database connection, JWT settings, and external API keys in `apps
   "Igdb": {
     "ClientId": "your_twitch_client_id",
     "ClientSecret": "your_twitch_client_secret"
+  },
+  "App": {
+    "FrontendUrl": "http://localhost:3000"
+  },
+  "Brevo": {
+    "ApiKey": "your_brevo_api_key",
+    "SenderEmail": "no-reply@yourdomain.com",
+    "SenderName": "Kue",
+    "PasswordResetTemplateId": ""
   }
 }
 ```
@@ -132,6 +143,9 @@ Configure your database connection, JWT settings, and external API keys in `apps
 > - **AniList:** Public GraphQL endpoint; no API key is required.
 > - **TMDB:** Obtain your API Key or Read Access Token from the [TMDB Developer Portal](https://www.themoviedb.org/settings/api).
 > - **IGDB:** Obtain your `ClientId` and `ClientSecret` from the [Twitch Developer Console](https://dev.twitch.tv/console). Kue automatically negotiates OAuth App Access Tokens via Client Credentials Flow and caches tokens in memory.
+> - **Brevo:** Obtain your API key from the Brevo dashboard under *SMTP & API*. The free plan includes 300 emails per day. `App:FrontendUrl` is the base URL that password reset links are built from, and it must match an origin allowed by the CORS policy. Setting `Brevo:PasswordResetTemplateId` switches the password reset email from the built-in HTML body to a Brevo drag-and-drop template; leave it empty to use the inline body.
+>
+> **Brevo senders:** A sender must be verified in the Brevo dashboard before the API will accept it. Brevo single-sender verification lets you send to any recipient from a personal address, so no domain purchase is required. Note that a `gmail.com` sender cannot publish SPF or DKIM records, so Gmail, Yahoo, and Microsoft may filter these messages into spam. Authenticating a domain fixes that and is the recommended step before real users depend on password resets.
 >
 > **Security Notice:** Never commit production JWT secrets or API keys to version control. Generate a cryptographically secure key:
 >
@@ -146,6 +160,9 @@ Configure your database connection, JWT settings, and external API keys in `apps
 > dotnet user-secrets set "Tmdb:ApiKey" "your_tmdb_key"
 > dotnet user-secrets set "Igdb:ClientId" "your_client_id"
 > dotnet user-secrets set "Igdb:ClientSecret" "your_client_secret"
+> dotnet user-secrets set "App:FrontendUrl" "http://localhost:3000"
+> dotnet user-secrets set "Brevo:ApiKey" "xkeysib-your_brevo_api_key"
+> dotnet user-secrets set "Brevo:SenderEmail" "your_verified_sender@email.com"
 > ```
 
 ### 3. Run Database Migrations

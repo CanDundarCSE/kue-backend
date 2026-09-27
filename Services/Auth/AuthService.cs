@@ -5,23 +5,44 @@ using System.Text;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Auth;
 using Kue.Api.Entities;
+using Kue.Api.Services.Background;
+using Kue.Api.Services.Email;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.IdentityModel.Tokens;
 
 namespace Kue.Api.Services;
 
 public class AuthService : IAuthService
 {
+    private const int PasswordResetTokenLifetimeHours = 1;
+    private const int PasswordResetCooldownSeconds = 60;
+
     private readonly AppDbContext _context;
     private readonly IConfiguration _configuration;
     private readonly IPasswordHasher<User> _passwordHasher;
+    private readonly IEmailService _emailService;
+    private readonly IBackgroundTaskQueue _backgroundTaskQueue;
+    private readonly IMemoryCache _memoryCache;
+    private readonly ILogger<AuthService> _logger;
 
-    public AuthService(AppDbContext context, IConfiguration configuration, IPasswordHasher<User> passwordHasher)
+    public AuthService(
+        AppDbContext context,
+        IConfiguration configuration,
+        IPasswordHasher<User> passwordHasher,
+        IEmailService emailService,
+        IBackgroundTaskQueue backgroundTaskQueue,
+        IMemoryCache memoryCache,
+        ILogger<AuthService> logger)
     {
         _context = context;
         _configuration = configuration;
         _passwordHasher = passwordHasher;
+        _emailService = emailService;
+        _backgroundTaskQueue = backgroundTaskQueue;
+        _memoryCache = memoryCache;
+        _logger = logger;
     }
 
     public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
@@ -215,13 +236,45 @@ public class AuthService : IAuthService
             return null;
         }
 
+        // Rate limiting caps requests per IP, but not repeated mail to a single
+        // victim reached from many addresses. Suppress duplicates for a short window.
+        // Checked before the token is rotated so a live emailed link is not invalidated.
+        var cooldownKey = $"password_reset_cooldown_{user.Id}";
+        if (_memoryCache.TryGetValue(cooldownKey, out _))
+        {
+            _logger.LogInformation("Password reset email for user {UserId} suppressed by cooldown", user.Id);
+            return null;
+        }
+
         var tokenBytes = RandomNumberGenerator.GetBytes(32);
         var resetToken = Convert.ToHexString(tokenBytes);
         // Store only a hash of the reset token so a DB leak cannot be used to reset passwords
         user.PasswordResetToken = HashToken(resetToken);
-        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddHours(1);
+        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddHours(PasswordResetTokenLifetimeHours);
 
         await _context.SaveChangesAsync(cancellationToken);
+
+        var frontendUrl = _configuration["App:FrontendUrl"];
+        if (string.IsNullOrWhiteSpace(frontendUrl))
+        {
+            // Logged, never thrown. Throwing here would return 500 only when the account
+            // exists and 200 otherwise, which is a user enumeration oracle.
+            _logger.LogError("App:FrontendUrl is missing in configuration; password reset email was not sent.");
+            return resetToken;
+        }
+
+        // Convert.ToHexString only emits [0-9A-F], so the token needs no URL encoding.
+        var resetLink = $"{frontendUrl.TrimEnd('/')}/reset-password"
+                        + $"?token={resetToken}&email={Uri.EscapeDataString(user.Email)}";
+
+        // Handed to the background queue rather than awaited, so a slow or failing mail
+        // provider cannot make this branch measurably slower than the account-not-found one.
+        await _backgroundTaskQueue.EnqueueAsync(
+            (serviceProvider, ct) => serviceProvider.GetRequiredService<IEmailService>()
+                .SendPasswordResetEmailAsync(user.Email, user.Username, resetLink, ct),
+            cancellationToken);
+
+        _memoryCache.Set(cooldownKey, true, TimeSpan.FromSeconds(PasswordResetCooldownSeconds));
 
         return resetToken;
     }

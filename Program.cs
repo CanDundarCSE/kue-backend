@@ -27,6 +27,8 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api.Services.Media.ExternalMediaService>();
 builder.Services.AddScoped<Kue.Api.Services.Media.IMediaService, Kue.Api.Services.Media.MediaService>();
 builder.Services.AddScoped<Kue.Api.Services.Notifications.INotificationService, Kue.Api.Services.Notifications.NotificationService>();
+builder.Services.AddBackgroundTaskQueue();
+builder.Services.AddBrevoEmail(builder.Configuration);
 
 // ---------------------------------------------------------------------
 // 3. Security & Middleware
