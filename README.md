@@ -46,7 +46,7 @@ Built with .NET 10, C# 13, PostgreSQL, Entity Framework Core, and ASP.NET Core S
 - Authentication: Short-lived JWT access tokens with secure HttpOnly refresh token cookies.
 - Token rotation and RFC 6749 reuse detection (automatic session revocation on replay attacks).
 - Brute-force protection: IP-based Token Bucket rate limiting on authentication routes.
-- Password reset: single-use 256-bit tokens stored only as SHA-256 hashes with a one-hour expiry, delivered by transactional email (Brevo) and never returned to clients outside development.
+- Password reset: single-use 256-bit tokens stored only as SHA-256 hashes with a one-hour expiry, delivered by transactional email (Brevo). The token is never part of any API response in any environment — it exists only inside the emailed link, so knowledge of an email address alone cannot grant a password reset.
 - Timing-safe password reset: reset mail is dispatched through a background queue so a known address is not measurably slower to respond than an unknown one, and a per-user cooldown suppresses repeated mail to a single account.
 - Global exception handling middleware: sanitizes all unhandled server errors into standardized JSON to prevent stack trace or database structure leakage.
 - IDOR prevention: strict server-side ownership checks across library, list, rating, and notification actions.

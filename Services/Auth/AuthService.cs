@@ -225,7 +225,7 @@ public class AuthService : IAuthService
         await _context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<string?> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default)
+    public async Task ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default)
     {
         var normalizedEmail = request.Email.Trim().ToLowerInvariant();
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
@@ -233,7 +233,7 @@ public class AuthService : IAuthService
         if (user is null)
         {
             // Do not reveal user existence
-            return null;
+            return;
         }
 
         // Rate limiting caps requests per IP, but not repeated mail to a single
@@ -243,7 +243,7 @@ public class AuthService : IAuthService
         if (_memoryCache.TryGetValue(cooldownKey, out _))
         {
             _logger.LogInformation("Password reset email for user {UserId} suppressed by cooldown", user.Id);
-            return null;
+            return;
         }
 
         var tokenBytes = RandomNumberGenerator.GetBytes(32);
@@ -254,13 +254,18 @@ public class AuthService : IAuthService
 
         await _context.SaveChangesAsync(cancellationToken);
 
+        // Set before the configuration check below so a misconfigured deployment cannot be
+        // used to rotate tokens on every request.
+        _memoryCache.Set(cooldownKey, true, TimeSpan.FromSeconds(PasswordResetCooldownSeconds));
+
         var frontendUrl = _configuration["App:FrontendUrl"];
         if (string.IsNullOrWhiteSpace(frontendUrl))
         {
             // Logged, never thrown. Throwing here would return 500 only when the account
-            // exists and 200 otherwise, which is a user enumeration oracle.
+            // exists and 200 otherwise, which is a user enumeration oracle. The token is
+            // deliberately discarded: with no link to deliver it must never be returned.
             _logger.LogError("App:FrontendUrl is missing in configuration; password reset email was not sent.");
-            return resetToken;
+            return;
         }
 
         // Convert.ToHexString only emits [0-9A-F], so the token needs no URL encoding.
@@ -273,10 +278,6 @@ public class AuthService : IAuthService
             (serviceProvider, ct) => serviceProvider.GetRequiredService<IEmailService>()
                 .SendPasswordResetEmailAsync(user.Email, user.Username, resetLink, ct),
             cancellationToken);
-
-        _memoryCache.Set(cooldownKey, true, TimeSpan.FromSeconds(PasswordResetCooldownSeconds));
-
-        return resetToken;
     }
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default)

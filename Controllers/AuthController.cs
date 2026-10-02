@@ -16,13 +16,11 @@ public class AuthController : ControllerBase
     private const string RefreshCookiePath = "/api/v1/auth";
     private readonly IAuthService _authService;
     private readonly IConfiguration _configuration;
-    private readonly IWebHostEnvironment _environment;
 
-    public AuthController(IAuthService authService, IConfiguration configuration, IWebHostEnvironment environment)
+    public AuthController(IAuthService authService, IConfiguration configuration)
     {
         _authService = authService;
         _configuration = configuration;
-        _environment = environment;
     }
 
     [HttpPost("register")]
@@ -147,14 +145,14 @@ public class AuthController : ControllerBase
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request, CancellationToken ct)
     {
-        var token = await _authService.ForgotPasswordAsync(request, ct);
-
-        // Include resetToken in response only during development to simplify testing in Scalar
-        var debugToken = _environment.IsDevelopment() ? token : null;
+        // Always the same status, body and message whether or not the account exists.
+        // The reset token is never part of this response in any environment: returning it
+        // would let anyone take over an account by knowing its email address. It reaches
+        // the owner only through the link emailed by Brevo.
+        await _authService.ForgotPasswordAsync(request, ct);
 
         return Ok(new ForgotPasswordResponseDto(
-            "If an account with that email exists, a password reset token has been generated.",
-            debugToken
+            "If an account with that email exists, a password reset link has been sent."
         ));
     }
     [EnableRateLimiting("auth")]
