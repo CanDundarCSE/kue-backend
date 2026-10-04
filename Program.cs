@@ -4,6 +4,7 @@ using Kue.Api.Entities;
 using Kue.Api.Extensions;
 using Kue.Api.Middlewares;
 using Kue.Api.Services;
+using Kue.Api.Services.Background;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +29,7 @@ builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api
 builder.Services.AddScoped<Kue.Api.Services.Media.IMediaService, Kue.Api.Services.Media.MediaService>();
 builder.Services.AddScoped<Kue.Api.Services.Notifications.INotificationService, Kue.Api.Services.Notifications.NotificationService>();
 builder.Services.AddBackgroundTaskQueue();
+builder.Services.AddHostedService<TokenCleanupBackgroundService>();
 builder.Services.AddBrevoEmail(builder.Configuration);
 
 // ---------------------------------------------------------------------

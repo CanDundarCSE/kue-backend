@@ -40,6 +40,10 @@ public class AppDbContext : DbContext
             entity.HasIndex(r => r.Token).IsUnique();
             entity.HasIndex(r => r.ReplacedByToken);
 
+            // Covers the background cleanup predicate (expired OR long-revoked)
+            // so purging never degrades to a full table scan.
+            entity.HasIndex(r => new { r.ExpiresAt, r.IsRevoked, r.RevokedAtUtc });
+
             entity.Property(r => r.RevocationReason).HasMaxLength(50);
             entity.Property(r => r.ReplacedByToken).HasMaxLength(64);
             entity.Property(r => r.CreatedByIp).HasMaxLength(45);
