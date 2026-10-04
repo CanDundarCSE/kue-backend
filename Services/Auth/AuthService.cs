@@ -18,6 +18,8 @@ public class AuthService : IAuthService
 {
     private const int PasswordResetTokenLifetimeHours = 1;
     private const int PasswordResetCooldownSeconds = 60;
+    private const int DefaultRotationGracePeriodSeconds = 30;
+    private const int MaxRotationChainHops = 10;
 
     private readonly AppDbContext _context;
     private readonly IConfiguration _configuration;
@@ -26,6 +28,7 @@ public class AuthService : IAuthService
     private readonly IBackgroundTaskQueue _backgroundTaskQueue;
     private readonly IMemoryCache _memoryCache;
     private readonly ILogger<AuthService> _logger;
+    private readonly int _rotationGracePeriodSeconds;
 
     public AuthService(
         AppDbContext context,
@@ -43,9 +46,12 @@ public class AuthService : IAuthService
         _backgroundTaskQueue = backgroundTaskQueue;
         _memoryCache = memoryCache;
         _logger = logger;
+        _rotationGracePeriodSeconds = int.TryParse(configuration["Jwt:RefreshTokenRotationGracePeriodSeconds"], out var grace) && grace > 0
+            ? grace
+            : DefaultRotationGracePeriodSeconds;
     }
 
-    public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
+    public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
         // 1. Check if user already exists (generic message to prevent user enumeration)
         if (await _context.Users.AnyAsync(u => u.Email == request.Email || u.Username == request.Username, cancellationToken))
@@ -68,13 +74,13 @@ public class AuthService : IAuthService
         // 3. Prepare response DTO & save refresh token to DB
         var userDto = MapToUserDto(user);
         var response = await GenerateAuthResponseAsync(userDto);
-        await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, cancellationToken);
+        await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, ipAddress, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
 
         return response;
     }
 
-    public async Task<AuthResponseDto> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    public async Task<AuthResponseDto> LoginAsync(LoginRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
         // 1. Find user
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email, cancellationToken);
@@ -102,7 +108,7 @@ public class AuthService : IAuthService
 
         // 3. Clean up expired or revoked tokens
         var obsoleteTokens = await _context.RefreshTokens
-            .Where(r => r.UserId == user.Id && (r.ExpiresAt <= DateTime.UtcNow || (r.IsRevoked && r.RevokedAt < DateTime.UtcNow.AddDays(-7))))
+            .Where(r => r.UserId == user.Id && (r.ExpiresAt <= DateTime.UtcNow || (r.IsRevoked && r.RevokedAtUtc < DateTime.UtcNow.AddDays(-7))))
             .ToListAsync(cancellationToken);
         if (obsoleteTokens.Count > 0)
         {
@@ -112,17 +118,19 @@ public class AuthService : IAuthService
         // 4. Prepare response DTO & save refresh token to DB
         var userDto = MapToUserDto(user);
         var response = await GenerateAuthResponseAsync(userDto);
-        await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, cancellationToken);
+        await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, ipAddress, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
 
         return response;
     }
 
-    public async Task<AuthResponseDto> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default)
+    public async Task<AuthResponseDto> RefreshTokenAsync(string refreshToken, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
-        // 1. Find refresh token in DB (tokens are stored as SHA-256 hashes)
+        // 1. Find refresh token in DB (tokens are stored as SHA-256 hashes).
+        // AsNoTracking: the atomic claim below mutates the row outside the change
+        // tracker, so a tracked copy would go stale when a racing request wins.
         var tokenHash = HashToken(refreshToken);
-        var storedToken = await _context.RefreshTokens
+        var storedToken = await _context.RefreshTokens.AsNoTracking()
             .Include(r => r.User)
             .FirstOrDefaultAsync(r => r.Token == tokenHash, cancellationToken);
 
@@ -136,47 +144,208 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Your account has been suspended.");
         }
 
-        // 2. If token was previously revoked (Reuse Attack Detection - RFC 6749)
-        if (storedToken.IsRevoked)
+        if (!storedToken.IsRevoked)
         {
-            // Possible token leak: Revoke all active refresh tokens for the user!
-            var compromisedTokens = await _context.RefreshTokens
-                .Where(r => r.UserId == storedToken.UserId && !r.IsRevoked)
-                .ToListAsync(cancellationToken);
-
-            foreach (var token in compromisedTokens)
+            if (storedToken.ExpiresAt <= DateTime.UtcNow)
             {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
+                throw new UnauthorizedAccessException("Expired refresh token.");
             }
 
-            await _context.SaveChangesAsync(cancellationToken);
-            throw new UnauthorizedAccessException("Refresh token reuse detected. All active sessions have been revoked.");
+            // 2. Atomically claim this token for rotation. Only one of N racing
+            // requests (multi-tab reload, parallel API calls) can claim it; the
+            // losers re-read the freshly rotated state and hit the grace path.
+            var response = await TryRotateActiveTokenAsync(storedToken, ipAddress, cancellationToken);
+            if (response is not null)
+            {
+                return response;
+            }
+
+            var reloadedToken = await _context.RefreshTokens.AsNoTracking()
+                .Include(r => r.User)
+                .FirstOrDefaultAsync(r => r.Token == tokenHash, cancellationToken);
+
+            if (reloadedToken is null)
+            {
+                // The row was removed in parallel (expired-token cleanup).
+                throw new UnauthorizedAccessException("Invalid refresh token.");
+            }
+
+            return await HandleRevokedTokenAsync(reloadedToken, ipAddress, cancellationToken);
         }
 
-        // 3. Check if token is expired
-        if (storedToken.ExpiresAt <= DateTime.UtcNow)
-        {
-            throw new UnauthorizedAccessException("Expired refresh token.");
-        }
-
-        // 4. Invalidate old token (One-time use / Token Rotation)
-        storedToken.IsRevoked = true;
-        storedToken.RevokedAt = DateTime.UtcNow;
-        
-        // 5. Generate new tokens
-        var userDto = MapToUserDto(storedToken.User);
-        var response = await GenerateAuthResponseAsync(userDto);
-
-        // 6. Save new refresh token to DB
-        await SaveRefreshTokenAsync(storedToken.UserId, response.RefreshToken!, cancellationToken);
-        
-        await _context.SaveChangesAsync(cancellationToken);
-
-        return response;
+        // 3. Revoked token: grace window for a legitimate race, or full revocation
+        // for a genuine replay outside the window.
+        return await HandleRevokedTokenAsync(storedToken, ipAddress, cancellationToken);
     }
 
-    public async Task RevokeRefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Claims <paramref name="storedToken"/> for rotation inside a single transaction
+    /// and issues the replacement pair. Returns null if a racing request claimed the
+    /// token first.
+    /// </summary>
+    private async Task<AuthResponseDto?> TryRotateActiveTokenAsync(RefreshToken storedToken, string? ipAddress, CancellationToken cancellationToken)
+    {
+        var userDto = MapToUserDto(storedToken.User);
+        var (accessToken, expiresAt, expiryMinutes) = CreateAccessToken(userDto);
+        var newRefreshToken = GenerateRefreshToken();
+        var newTokenHash = HashToken(newRefreshToken);
+        var now = DateTime.UtcNow;
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        // Single conditional UPDATE: Postgres serializes concurrent claims on the
+        // row lock and re-checks the predicate after the winner commits, so a
+        // racing requester updates 0 rows instead of forking the rotation chain.
+        var claimed = await _context.RefreshTokens
+            .Where(r => r.Token == storedToken.Token && !r.IsRevoked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.IsRevoked, true)
+                .SetProperty(r => r.RevokedAtUtc, now)
+                .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.Rotated)
+                .SetProperty(r => r.ReplacedByToken, newTokenHash)
+                .SetProperty(r => r.RevokedByIp, ipAddress), cancellationToken);
+
+        if (claimed == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        var newEntity = new RefreshToken
+        {
+            UserId = storedToken.UserId,
+            Token = newTokenHash,
+            ExpiresAt = now.AddDays(GetRefreshTokenExpirationDays()),
+            CreatedAt = now,
+            CreatedByIp = ipAddress,
+            IsRevoked = false
+        };
+
+        _context.RefreshTokens.Add(newEntity);
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return new AuthResponseDto
+        {
+            AccessToken = accessToken,
+            RefreshToken = newRefreshToken,
+            TokenType = "Bearer",
+            ExpiresIn = expiryMinutes,
+            ExpiresAt = expiresAt,
+            User = userDto
+        };
+    }
+
+    /// <summary>
+    /// Handles a replay of an already-revoked token.
+    /// Within the rotation grace period a replay of a rotated token is treated as a
+    /// legitimate concurrent race (e.g. a second browser tab still holding the old
+    /// token): the user is issued a fresh pair and NO sessions are revoked.
+    /// Outside the window (or when no live replacement chain exists) this is treated
+    /// as token theft and every active session for the user is revoked.
+    /// </summary>
+    private async Task<AuthResponseDto> HandleRevokedTokenAsync(RefreshToken storedToken, string? ipAddress, CancellationToken cancellationToken)
+    {
+        var user = storedToken.User;
+        var now = DateTime.UtcNow;
+        var withinGracePeriod = storedToken.RevokedAtUtc.HasValue
+            && now <= storedToken.RevokedAtUtc.Value.AddSeconds(_rotationGracePeriodSeconds);
+
+        if (withinGracePeriod && storedToken.RevocationReason == RefreshTokenRevocationReason.Rotated)
+        {
+            var activeHead = await FindActiveRotationHeadAsync(storedToken, cancellationToken);
+            if (activeHead is not null)
+            {
+                _logger.LogInformation(
+                    "Refresh token replayed within the {GracePeriod}s grace period for user {UserId}; issuing a replacement without revoking sessions.",
+                    _rotationGracePeriodSeconds, user.Id);
+
+                return await IssueNewTokenPairAsync(user, ipAddress, cancellationToken);
+            }
+        }
+
+        if (withinGracePeriod)
+        {
+            // Revoked for another reason (manual logout, password change, ...) or the
+            // replacement chain is already dead. Return 401 WITHOUT cascading: the
+            // family is already invalid, and cascading would let one stale token wipe
+            // out the user's live sessions.
+            throw new UnauthorizedAccessException("This session is no longer active. Please log in again.");
+        }
+
+        // Outside the grace window this is a genuine replay / leak (RFC 6749 reuse
+        // detection): revoke every active refresh token for this user.
+        _logger.LogWarning(
+            "Refresh token replay detected outside the grace period for user {UserId}; revoking all active sessions.",
+            user.Id);
+
+        await _context.RefreshTokens
+            .Where(r => r.UserId == user.Id && !r.IsRevoked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.IsRevoked, true)
+                .SetProperty(r => r.RevokedAtUtc, now)
+                .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.ReplayAttackDetected)
+                .SetProperty(r => r.RevokedByIp, ipAddress), cancellationToken);
+
+        throw new UnauthorizedAccessException("Refresh token reuse detected. All active sessions have been revoked.");
+    }
+
+    /// <summary>
+    /// Walks the rotation chain (via ReplacedByToken) from the revoked token to its
+    /// currently active head. Returns null when the chain has no live token.
+    /// </summary>
+    private async Task<RefreshToken?> FindActiveRotationHeadAsync(RefreshToken startingToken, CancellationToken cancellationToken)
+    {
+        var current = startingToken;
+        var visited = new HashSet<string> { current.Token };
+
+        for (var hop = 0; hop < MaxRotationChainHops; hop++)
+        {
+            var successorHash = current.ReplacedByToken;
+            if (string.IsNullOrEmpty(successorHash))
+            {
+                return null;
+            }
+
+            var successor = await _context.RefreshTokens.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Token == successorHash, cancellationToken);
+
+            if (successor is null || !visited.Add(successor.Token))
+            {
+                return null;
+            }
+
+            if (!successor.IsRevoked && successor.ExpiresAt > DateTime.UtcNow)
+            {
+                return successor;
+            }
+
+            current = successor;
+        }
+
+        return null;
+    }
+
+    private async Task<AuthResponseDto> IssueNewTokenPairAsync(User user, string? createdByIp, CancellationToken cancellationToken)
+    {
+        var userDto = MapToUserDto(user);
+        var (accessToken, expiresAt, expiryMinutes) = CreateAccessToken(userDto);
+        var refreshToken = GenerateRefreshToken();
+
+        await SaveRefreshTokenAsync(user.Id, refreshToken, createdByIp, cancellationToken);
+
+        return new AuthResponseDto
+        {
+            AccessToken = accessToken,
+            RefreshToken = refreshToken,
+            TokenType = "Bearer",
+            ExpiresIn = expiryMinutes,
+            ExpiresAt = expiresAt,
+            User = userDto
+        };
+    }
+
+    public async Task RevokeRefreshTokenAsync(string refreshToken, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
         var tokenHash = HashToken(refreshToken);
         var storedToken = await _context.RefreshTokens
@@ -185,7 +354,9 @@ public class AuthService : IAuthService
         if (storedToken != null && !storedToken.IsRevoked)
         {
             storedToken.IsRevoked = true;
-            storedToken.RevokedAt = DateTime.UtcNow;
+            storedToken.RevokedAtUtc = DateTime.UtcNow;
+            storedToken.RevocationReason = RefreshTokenRevocationReason.ManualLogout;
+            storedToken.RevokedByIp = ipAddress;
             await _context.SaveChangesAsync(cancellationToken);
         }
     }
@@ -212,15 +383,13 @@ public class AuthService : IAuthService
         user.PasswordHash = _passwordHasher.HashPassword(user, request.NewPassword);
 
         // Revoke all existing refresh tokens for security
-        var activeTokens = await _context.RefreshTokens
+        var now = DateTime.UtcNow;
+        await _context.RefreshTokens
             .Where(r => r.UserId == user.Id && !r.IsRevoked)
-            .ToListAsync(cancellationToken);
-
-        foreach (var token in activeTokens)
-        {
-            token.IsRevoked = true;
-            token.RevokedAt = DateTime.UtcNow;
-        }
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.IsRevoked, true)
+                .SetProperty(r => r.RevokedAtUtc, now)
+                .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.PasswordChanged), cancellationToken);
 
         await _context.SaveChangesAsync(cancellationToken);
     }
@@ -299,15 +468,13 @@ public class AuthService : IAuthService
         user.PasswordResetTokenExpiresAt = null;
 
         // Revoke active sessions
-        var activeTokens = await _context.RefreshTokens
+        var now = DateTime.UtcNow;
+        await _context.RefreshTokens
             .Where(r => r.UserId == user.Id && !r.IsRevoked)
-            .ToListAsync(cancellationToken);
-
-        foreach (var token in activeTokens)
-        {
-            token.IsRevoked = true;
-            token.RevokedAt = DateTime.UtcNow;
-        }
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.IsRevoked, true)
+                .SetProperty(r => r.RevokedAtUtc, now)
+                .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.PasswordReset), cancellationToken);
 
         await _context.SaveChangesAsync(cancellationToken);
     }
@@ -316,10 +483,26 @@ public class AuthService : IAuthService
 
     private Task<AuthResponseDto> GenerateAuthResponseAsync(AuthUserDto user)
     {
+        var (accessToken, expiresAt, expiryMinutes) = CreateAccessToken(user);
+        var refreshToken = GenerateRefreshToken();
+
+        return Task.FromResult(new AuthResponseDto
+        {
+            AccessToken = accessToken,
+            RefreshToken = refreshToken,
+            TokenType = "Bearer",
+            ExpiresIn = expiryMinutes * 60,
+            ExpiresAt = expiresAt,
+            User = user
+        });
+    }
+
+    private (string AccessToken, DateTimeOffset ExpiresAt, int ExpiryMinutes) CreateAccessToken(AuthUserDto user)
+    {
         var jwtKey = _configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key missing!");
         var issuer = _configuration["Jwt:Issuer"];
         var audience = _configuration["Jwt:Audience"];
-        
+
         if (!int.TryParse(_configuration["Jwt:AccessTokenExpirationMinutes"], out var expiryMinutes)) expiryMinutes = 15;
 
         var claims = new List<Claim>
@@ -341,32 +524,29 @@ public class AuthService : IAuthService
             expires: expiresAt.UtcDateTime,
             signingCredentials: creds);
         var accessToken = new JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
-        var refreshToken = GenerateRefreshToken();
 
-        return Task.FromResult(new AuthResponseDto
-        {
-            AccessToken = accessToken,
-            RefreshToken = refreshToken,
-            TokenType = "Bearer",
-            ExpiresIn = expiryMinutes * 60,
-            ExpiresAt = expiresAt,
-            User = user
-        });
+        return (accessToken, expiresAt, expiryMinutes);
     }
 
-    private async Task SaveRefreshTokenAsync(int userId, string token, CancellationToken ct)
+    private int GetRefreshTokenExpirationDays()
     {
         if (!int.TryParse(_configuration["Jwt:RefreshTokenExpirationDays"], out var expiryDays)) expiryDays = 7;
+        return expiryDays;
+    }
 
+    private async Task SaveRefreshTokenAsync(int userId, string token, string? createdByIp, CancellationToken ct)
+    {
         // Store only a SHA-256 hash of the refresh token (see RefreshTokenAsync lookup)
         var tokenHash = HashToken(token);
+        var now = DateTime.UtcNow;
         var refreshTokenEntity = new RefreshToken
         {
             UserId = userId,
             Token = tokenHash,
-            ExpiresAt = DateTime.UtcNow.AddDays(expiryDays),
+            ExpiresAt = now.AddDays(GetRefreshTokenExpirationDays()),
             IsRevoked = false,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = now,
+            CreatedByIp = createdByIp
         };
         await _context.RefreshTokens.AddAsync(refreshTokenEntity, ct);
     }

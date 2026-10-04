@@ -253,15 +253,13 @@ public class AdminController : ControllerBase
             user.BannedAt = DateTime.UtcNow;
 
             // Revoke all active refresh tokens for immediate session invalidation
-            var activeTokens = await _context.RefreshTokens
+            var now = DateTime.UtcNow;
+            await _context.RefreshTokens
                 .Where(r => r.UserId == user.Id && !r.IsRevoked)
-                .ToListAsync(ct);
-
-            foreach (var token in activeTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.IsRevoked, true)
+                    .SetProperty(r => r.RevokedAtUtc, now)
+                    .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.AccountBanned), ct);
         }
         else
         {

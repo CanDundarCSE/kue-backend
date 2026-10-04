@@ -38,6 +38,13 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(r => r.Id);
             entity.HasIndex(r => r.Token).IsUnique();
+            entity.HasIndex(r => r.ReplacedByToken);
+
+            entity.Property(r => r.RevocationReason).HasMaxLength(50);
+            entity.Property(r => r.ReplacedByToken).HasMaxLength(64);
+            entity.Property(r => r.CreatedByIp).HasMaxLength(45);
+            entity.Property(r => r.RevokedByIp).HasMaxLength(45);
+
             entity.HasOne(r => r.User)
                   .WithMany(u => u.RefreshTokens)
                   .HasForeignKey(r => r.UserId)

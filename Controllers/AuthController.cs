@@ -3,6 +3,7 @@ using Kue.Api.Dtos.Auth;
 using Kue.Api.Dtos.Common;
 using Kue.Api.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -31,7 +32,7 @@ public class AuthController : ControllerBase
     {
         try 
         {
-            var response = await _authService.RegisterAsync(request, ct);
+            var response = await _authService.RegisterAsync(request, GetClientIp(), ct);
             SetAuthCookies(response.AccessToken, response.RefreshToken);
             return StatusCode(StatusCodes.Status201Created, response);
         }
@@ -50,7 +51,7 @@ public class AuthController : ControllerBase
     {
         try 
         {
-            var response = await _authService.LoginAsync(request, ct);
+            var response = await _authService.LoginAsync(request, GetClientIp(), ct);
             SetAuthCookies(response.AccessToken, response.RefreshToken);
             return Ok(response);
         }
@@ -79,7 +80,7 @@ public class AuthController : ControllerBase
 
         try 
         {
-            var response = await _authService.RefreshTokenAsync(refreshToken, ct);
+            var response = await _authService.RefreshTokenAsync(refreshToken, GetClientIp(), ct);
             SetAuthCookies(response.AccessToken, response.RefreshToken);
             return Ok(response);
         }
@@ -103,7 +104,7 @@ public class AuthController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
-            await _authService.RevokeRefreshTokenAsync(refreshToken, ct);
+            await _authService.RevokeRefreshTokenAsync(refreshToken, GetClientIp(), ct);
         }
         
         ClearAuthCookies();
@@ -173,6 +174,8 @@ public class AuthController : ControllerBase
     }
 
     // -- HELPERS --
+
+    private string? GetClientIp() => Request.HttpContext.Connection.RemoteIpAddress?.ToString();
 
     private void SetAuthCookies(string accessToken, string? refreshToken)
     {
