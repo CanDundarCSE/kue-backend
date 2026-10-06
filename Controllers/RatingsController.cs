@@ -16,11 +16,16 @@ namespace Kue.Api.Controllers;
 public class RatingsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
     private readonly ILogger<RatingsController> _logger;
 
-    public RatingsController(AppDbContext context, ILogger<RatingsController> logger)
+    public RatingsController(
+        AppDbContext context,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        ILogger<RatingsController> logger)
     {
         _context = context;
+        _activityService = activityService;
         _logger = logger;
     }
 
@@ -115,6 +120,22 @@ public class RatingsController : ControllerBase
         }
 
         await _context.SaveChangesAsync(ct);
+
+        try
+        {
+            await _activityService.LogActivityAsync(
+                userId: userId.Value,
+                activityType: "rated",
+                mediaId: mediaId,
+                status: entry.Status,
+                progress: entry.Progress,
+                rating: request.Rating,
+                ct: ct);
+        }
+        catch
+        {
+            // Ignore activity log failure
+        }
 
         return Ok(new
         {

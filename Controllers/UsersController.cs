@@ -21,11 +21,16 @@ namespace Kue.Api.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
     private readonly ILogger<UsersController> _logger;
 
-    public UsersController(AppDbContext context, ILogger<UsersController> logger)
+    public UsersController(
+        AppDbContext context,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        ILogger<UsersController> logger)
     {
         _context = context;
+        _activityService = activityService;
         _logger = logger;
     }
 
@@ -443,6 +448,41 @@ public class UsersController : ControllerBase
         }).ToList();
 
         return Ok(new GenreStatsDto { Items = items });
+    }
+
+    /// <summary>
+    /// Get recent activities of the specified user. If profile is private, requires mutual friendship.
+    /// </summary>
+    [HttpGet("{username}/activity")]
+    [ProducesResponseType(typeof(ActivityStatsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetUserActivity(
+        string username,
+        [FromQuery] int days = 30,
+        [FromQuery] int limit = 20,
+        CancellationToken ct = default)
+    {
+        var normalizedUsername = username.Trim().ToLower();
+        var user = await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Username.ToLower() == normalizedUsername, ct);
+
+        if (user is null)
+        {
+            return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their activity."));
+        }
+
+        var result = await _activityService.GetUserActivitiesAsync(user.Id, days, limit, ct);
+        return Ok(result);
     }
 
     // --- Private Helpers ---

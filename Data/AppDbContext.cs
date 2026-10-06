@@ -15,6 +15,7 @@ public class AppDbContext : DbContext
     public DbSet<CustomListItem> CustomListItems => Set<CustomListItem>();
     public DbSet<Friendship> Friendships => Set<Friendship>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<UserActivity> UserActivities => Set<UserActivity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -188,6 +189,37 @@ public class AppDbContext : DbContext
             entity.HasOne(n => n.Actor)
                   .WithMany(u => u.TriggeredNotifications)
                   .HasForeignKey(n => n.ActorId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserActivity>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.ActivityType).HasMaxLength(50).IsRequired();
+            entity.Property(a => a.Action).HasMaxLength(100);
+            entity.Property(a => a.DetailText).HasMaxLength(200);
+            entity.Property(a => a.FormattedText).HasMaxLength(500);
+            entity.Property(a => a.Status).HasMaxLength(50);
+            entity.Property(a => a.UnitName).HasMaxLength(50);
+            entity.Property(a => a.Platform).HasMaxLength(100);
+
+            entity.HasIndex(a => a.UserId);
+            entity.HasIndex(a => a.CreatedAt);
+            entity.HasIndex(a => new { a.UserId, a.CreatedAt });
+
+            entity.HasOne(a => a.User)
+                  .WithMany(u => u.Activities)
+                  .HasForeignKey(a => a.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(a => a.Media)
+                  .WithMany()
+                  .HasForeignKey(a => a.MediaId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(a => a.CustomList)
+                  .WithMany()
+                  .HasForeignKey(a => a.CustomListId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
     }

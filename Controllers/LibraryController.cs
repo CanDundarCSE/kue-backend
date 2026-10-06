@@ -18,11 +18,16 @@ public class LibraryController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly Kue.Api.Services.Media.IMediaService _mediaService;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
 
-    public LibraryController(AppDbContext context, Kue.Api.Services.Media.IMediaService mediaService)
+    public LibraryController(
+        AppDbContext context,
+        Kue.Api.Services.Media.IMediaService mediaService,
+        Kue.Api.Services.Activity.IActivityService activityService)
     {
         _context = context;
         _mediaService = mediaService;
+        _activityService = activityService;
     }
 
     [HttpGet]
@@ -151,6 +156,23 @@ public class LibraryController : ControllerBase
 
         entry.Media = media;
 
+        try
+        {
+            await _activityService.LogActivityAsync(
+                userId: userId.Value,
+                activityType: isCompleted ? "completed" : "added",
+                mediaId: media.Id,
+                status: normalizedStatus,
+                progress: initialProgress,
+                rating: request.Rating,
+                platform: entry.Platform,
+                ct: ct);
+        }
+        catch
+        {
+            // Logging activity shouldn't fail the primary library operation
+        }
+
         return StatusCode(StatusCodes.Status201Created, MapToDto(entry));
     }
 
@@ -246,8 +268,55 @@ public class LibraryController : ControllerBase
             entry.IsFavorite = request.IsFavorite.Value;
         }
 
+        var oldProgress = entry.Progress;
+        var oldStatus = entry.Status;
+        var oldRating = entry.Rating;
+
         entry.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync(ct);
+
+        try
+        {
+            if (entry.Progress != oldProgress)
+            {
+                var delta = (entry.Progress ?? 0) - (oldProgress ?? 0);
+                await _activityService.LogActivityAsync(
+                    userId: userId.Value,
+                    activityType: entry.Status == "completed" ? "completed" : "progress",
+                    mediaId: entry.MediaId,
+                    status: entry.Status,
+                    progress: entry.Progress,
+                    progressDelta: delta > 0 ? delta : null,
+                    rating: entry.Rating,
+                    ct: ct);
+            }
+            else if (entry.Status != oldStatus)
+            {
+                await _activityService.LogActivityAsync(
+                    userId: userId.Value,
+                    activityType: entry.Status == "completed" ? "completed" : (entry.Status is "watching" or "reading" or "playing" ? "started" : "added"),
+                    mediaId: entry.MediaId,
+                    status: entry.Status,
+                    progress: entry.Progress,
+                    rating: entry.Rating,
+                    ct: ct);
+            }
+            else if (entry.Rating != oldRating && entry.Rating.HasValue)
+            {
+                await _activityService.LogActivityAsync(
+                    userId: userId.Value,
+                    activityType: "rated",
+                    mediaId: entry.MediaId,
+                    status: entry.Status,
+                    progress: entry.Progress,
+                    rating: entry.Rating,
+                    ct: ct);
+            }
+        }
+        catch
+        {
+            // Do not fail primary update on activity log failure
+        }
 
         return Ok(MapToDto(entry));
     }
@@ -291,6 +360,22 @@ public class LibraryController : ControllerBase
 
         await _context.SaveChangesAsync(ct);
 
+        try
+        {
+            await _activityService.LogActivityAsync(
+                userId: userId.Value,
+                activityType: newStatus == "completed" ? "completed" : (newStatus is "watching" or "reading" or "playing" ? "started" : "added"),
+                mediaId: entry.MediaId,
+                status: entry.Status,
+                progress: entry.Progress,
+                rating: entry.Rating,
+                ct: ct);
+        }
+        catch
+        {
+            // Ignore activity log failure
+        }
+
         return Ok(MapToDto(entry));
     }
 
@@ -319,6 +404,7 @@ public class LibraryController : ControllerBase
             return BadRequest(new MessageResponseDto("Progress tracking is only applicable to anime, series, and manga. For movies and games, please update the status."));
         }
 
+        var oldProgress = entry.Progress ?? 0;
         var newProgress = request.Progress;
         if (entry.Media.TotalUnits.HasValue && newProgress >= entry.Media.TotalUnits.Value)
         {
@@ -340,6 +426,24 @@ public class LibraryController : ControllerBase
         entry.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(ct);
+
+        try
+        {
+            var delta = newProgress - oldProgress;
+            await _activityService.LogActivityAsync(
+                userId: userId.Value,
+                activityType: entry.Status == "completed" ? "completed" : "progress",
+                mediaId: entry.MediaId,
+                status: entry.Status,
+                progress: newProgress,
+                progressDelta: delta > 0 ? delta : null,
+                rating: entry.Rating,
+                ct: ct);
+        }
+        catch
+        {
+            // Ignore activity log failure
+        }
 
         return Ok(MapToDto(entry));
     }

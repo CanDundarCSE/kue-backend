@@ -15,11 +15,16 @@ namespace Kue.Api.Controllers;
 public class StatsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
     private readonly ILogger<StatsController> _logger;
 
-    public StatsController(AppDbContext context, ILogger<StatsController> logger)
+    public StatsController(
+        AppDbContext context,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        ILogger<StatsController> logger)
     {
         _context = context;
+        _activityService = activityService;
         _logger = logger;
     }
 
@@ -180,49 +185,16 @@ public class StatsController : ControllerBase
     [HttpGet("activity")]
     [ProducesResponseType(typeof(ActivityStatsDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    public async Task<IActionResult> GetActivity([FromQuery] int days = 30, CancellationToken ct = default)
+    public async Task<IActionResult> GetActivity(
+        [FromQuery] int days = 30,
+        [FromQuery] int limit = 20,
+        CancellationToken ct = default)
     {
         var userId = GetCurrentUserId();
         if (userId is null) return Unauthorized();
 
-        days = Math.Clamp(days, 1, 365);
-        var cutoff = DateTime.UtcNow.Date.AddDays(-days);
-
-        var entries = await _context.LibraryEntries
-            .AsNoTracking()
-            .Where(e => e.UserId == userId.Value && (e.AddedAt >= cutoff || (e.CompletedAt.HasValue && e.CompletedAt.Value >= cutoff)))
-            .ToListAsync(ct);
-
-        var dateMap = new Dictionary<string, (int Added, int Completed)>();
-
-        foreach (var e in entries)
-        {
-            if (e.AddedAt >= cutoff)
-            {
-                var dateStr = e.AddedAt.ToString("yyyy-MM-dd");
-                dateMap.TryGetValue(dateStr, out var current);
-                dateMap[dateStr] = (current.Added + 1, current.Completed);
-            }
-
-            if (e.CompletedAt.HasValue && e.CompletedAt.Value >= cutoff)
-            {
-                var dateStr = e.CompletedAt.Value.ToString("yyyy-MM-dd");
-                dateMap.TryGetValue(dateStr, out var current);
-                dateMap[dateStr] = (current.Added, current.Completed + 1);
-            }
-        }
-
-        var items = dateMap
-            .OrderByDescending(kv => kv.Key)
-            .Select(kv => new ActivityItemDto
-            {
-                Date = kv.Key,
-                Added = kv.Value.Added,
-                Completed = kv.Value.Completed
-            })
-            .ToList();
-
-        return Ok(new ActivityStatsDto { Items = items });
+        var result = await _activityService.GetUserActivitiesAsync(userId.Value, days, limit, ct);
+        return Ok(result);
     }
 
     // --- Private Calculation Helpers ---

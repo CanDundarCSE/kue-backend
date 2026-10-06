@@ -19,13 +19,38 @@ public class FriendsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly INotificationService _notificationService;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
     private readonly ILogger<FriendsController> _logger;
 
-    public FriendsController(AppDbContext context, INotificationService notificationService, ILogger<FriendsController> logger)
+    public FriendsController(
+        AppDbContext context,
+        INotificationService notificationService,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        ILogger<FriendsController> logger)
     {
         _context = context;
         _notificationService = notificationService;
+        _activityService = activityService;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Get recent activities of accepted mutual friends (Image 2 FRIENDS feed).
+    /// </summary>
+    [HttpGet("activity")]
+    [HttpGet("activities")]
+    [ProducesResponseType(typeof(List<FriendActivityDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetFriendsActivities(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
+    {
+        var currentUserId = GetCurrentUserId();
+        if (currentUserId is null) return Unauthorized();
+
+        var activities = await _activityService.GetFriendsActivitiesAsync(currentUserId.Value, page, pageSize, ct);
+        return Ok(activities);
     }
 
     /// <summary>

@@ -15,10 +15,12 @@ namespace Kue.Api.Controllers;
 public class MeController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
 
-    public MeController(AppDbContext context)
+    public MeController(AppDbContext context, Kue.Api.Services.Activity.IActivityService activityService)
     {
         _context = context;
+        _activityService = activityService;
     }
 
     [HttpGet]
@@ -108,11 +110,18 @@ public class MeController : ControllerBase
     }
 
     [HttpGet("activity")]
-    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Kue.Api.Dtos.Stats.ActivityStatsDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    public IActionResult GetActivity()
+    public async Task<IActionResult> GetActivity(
+        [FromQuery] int days = 30,
+        [FromQuery] int limit = 20,
+        CancellationToken ct = default)
     {
-        return Ok(new MessageResponseDto("User activity retrieved successfully!"));
+        var userId = GetCurrentUserId();
+        if (userId is null) return Unauthorized();
+
+        var result = await _activityService.GetUserActivitiesAsync(userId.Value, days, limit, ct);
+        return Ok(result);
     }
 
     [HttpDelete]

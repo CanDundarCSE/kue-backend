@@ -19,12 +19,18 @@ public class ListsController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IMediaService _mediaService;
+    private readonly Kue.Api.Services.Activity.IActivityService _activityService;
     private readonly ILogger<ListsController> _logger;
 
-    public ListsController(AppDbContext context, IMediaService mediaService, ILogger<ListsController> logger)
+    public ListsController(
+        AppDbContext context,
+        IMediaService mediaService,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        ILogger<ListsController> logger)
     {
         _context = context;
         _mediaService = mediaService;
+        _activityService = activityService;
         _logger = logger;
     }
 
@@ -494,6 +500,22 @@ public class ListsController : ControllerBase
         list.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(ct);
+
+        try
+        {
+            var totalCount = await _context.CustomListItems.CountAsync(i => i.ListId == listId, ct);
+            await _activityService.LogActivityAsync(
+                userId: currentUserId.Value,
+                activityType: "list_added",
+                mediaId: media.Id,
+                customListId: listId,
+                itemCount: totalCount,
+                ct: ct);
+        }
+        catch
+        {
+            // Ignore activity logging failure
+        }
 
         // Load media navigation for response
         item.Media = media;
