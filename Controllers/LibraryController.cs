@@ -113,6 +113,7 @@ public class LibraryController : ControllerBase
 
         var normalizedStatus = request.Status.Trim().ToLower();
         var isEpisodic = media.MediaType is "anime" or "series" or "manga";
+        var isGame = media.MediaType == "game";
 
         int? initialProgress = null;
         if (isEpisodic)
@@ -122,6 +123,10 @@ public class LibraryController : ControllerBase
             {
                 initialProgress = media.TotalUnits.Value;
             }
+        }
+        else if (isGame)
+        {
+            initialProgress = Math.Max(0, request.Progress ?? 0);
         }
 
         var isCompleted = normalizedStatus == "completed";
@@ -224,6 +229,7 @@ public class LibraryController : ControllerBase
         }
 
         var isEpisodic = entry.Media.MediaType is "anime" or "series" or "manga";
+        var isGame = entry.Media.MediaType == "game";
 
         if (!string.IsNullOrWhiteSpace(request.Status))
         {
@@ -265,6 +271,15 @@ public class LibraryController : ControllerBase
                 entry.CompletedAt = null;
             }
             entry.Progress = newProgress;
+        }
+        else if (isGame && request.Progress.HasValue)
+        {
+            var newProgress = Math.Max(0, request.Progress.Value);
+            entry.Progress = newProgress;
+            if (entry.Status == "planning" && newProgress > 0 && string.IsNullOrWhiteSpace(request.Status))
+            {
+                entry.Status = "in_progress";
+            }
         }
 
         if (entry.Media.MediaType == "game" && request.Platform is not null)
@@ -413,14 +428,15 @@ public class LibraryController : ControllerBase
         }
 
         var isEpisodic = entry.Media.MediaType is "anime" or "series" or "manga";
-        if (!isEpisodic)
+        var isGame = entry.Media.MediaType == "game";
+        if (!isEpisodic && !isGame)
         {
-            return BadRequest(new MessageResponseDto("Progress tracking is only applicable to anime, series, and manga. For movies and games, please update the status."));
+            return BadRequest(new MessageResponseDto("Progress tracking is only applicable to anime, series, manga, and games."));
         }
 
         var oldProgress = entry.Progress ?? 0;
-        var newProgress = request.Progress;
-        if (entry.Media.TotalUnits.HasValue && newProgress >= entry.Media.TotalUnits.Value)
+        var newProgress = Math.Max(0, request.Progress);
+        if (isEpisodic && entry.Media.TotalUnits.HasValue && newProgress >= entry.Media.TotalUnits.Value)
         {
             newProgress = entry.Media.TotalUnits.Value;
             entry.Status = "completed";
