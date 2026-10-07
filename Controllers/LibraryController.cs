@@ -269,7 +269,7 @@ public class LibraryController : ControllerBase
 
         if (entry.Media.MediaType == "game" && request.Platform is not null)
         {
-            entry.Platform = request.Platform;
+            entry.Platform = string.IsNullOrWhiteSpace(request.Platform) ? null : request.Platform.Trim();
         }
 
         if (request.Rating.HasValue)

@@ -24,6 +24,8 @@ public class AddToLibraryRequest
     public int? TotalUnits { get; set; }
     public string? UnitName { get; set; }
     public int? RuntimeMinutes { get; set; }
+    public List<string>? Platforms { get; set; }
+    public string? Developer { get; set; }
 
     // User library progress & tracking
     public int? Progress { get; set; }

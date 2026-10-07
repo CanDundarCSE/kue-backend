@@ -70,8 +70,8 @@ public class MediaService : IMediaService
             var totalSeasons = fetchedDto?.TotalSeasons;
             var totalVolumes = fetchedDto?.TotalVolumes;
             var runtimeMinutes = fetchedDto?.RuntimeMinutes ?? request.RuntimeMinutes;
-            var platforms = fetchedDto?.Platforms;
-            var developer = fetchedDto?.Developer;
+            var platforms = (fetchedDto?.Platforms != null && fetchedDto.Platforms.Count > 0) ? fetchedDto.Platforms : request.Platforms;
+            var developer = fetchedDto?.Developer ?? request.Developer;
 
             var newMedia = new Entities.Media
             {
