@@ -126,23 +126,105 @@ public class ExternalMediaService : IExternalMediaService
         return await GetTmdbTrendingAsync(normalizedType, page, pageSize, ct);
     }
 
-    public async Task<PagedResponseDto<MediaDto>> GetSimilarAsync(string mediaType, string externalSource, string externalId, int pageSize = 10, CancellationToken ct = default)
+    private static readonly Dictionary<string, int> MovieGenreMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        var normalizedSource = externalSource.Trim().ToLowerInvariant();
+        ["Action"] = 28,
+        ["Adventure"] = 12,
+        ["Animation"] = 16,
+        ["Comedy"] = 35,
+        ["Crime"] = 80,
+        ["Documentary"] = 99,
+        ["Drama"] = 18,
+        ["Family"] = 10751,
+        ["Fantasy"] = 14,
+        ["History"] = 36,
+        ["Horror"] = 27,
+        ["Music"] = 10402,
+        ["Mystery"] = 9648,
+        ["Romance"] = 10749,
+        ["Science Fiction"] = 878,
+        ["Sci-Fi"] = 878,
+        ["Thriller"] = 53,
+        ["War"] = 10752,
+        ["Western"] = 37
+    };
+
+    private static readonly Dictionary<string, int> TvGenreMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Action & Adventure"] = 10759,
+        ["Action"] = 10759,
+        ["Adventure"] = 10759,
+        ["Animation"] = 16,
+        ["Comedy"] = 35,
+        ["Crime"] = 80,
+        ["Documentary"] = 99,
+        ["Drama"] = 18,
+        ["Family"] = 10751,
+        ["Kids"] = 10762,
+        ["Mystery"] = 9648,
+        ["News"] = 10763,
+        ["Reality"] = 10764,
+        ["Sci-Fi & Fantasy"] = 10765,
+        ["Sci-Fi"] = 10765,
+        ["Fantasy"] = 10765,
+        ["Soap"] = 10766,
+        ["Talk"] = 10767,
+        ["War & Politics"] = 10768,
+        ["Western"] = 37
+    };
+
+    public async Task<PagedResponseDto<MediaDto>> GetSimilarAsync(
+        string mediaType,
+        string? externalSource = null,
+        string? externalId = null,
+        IEnumerable<string>? genres = null,
+        int pageSize = 10,
+        CancellationToken ct = default)
+    {
+        var normalizedSource = externalSource?.Trim().ToLowerInvariant();
         var normalizedType = NormalizeMediaType(mediaType) ?? mediaType.Trim().ToLowerInvariant();
+        var genresList = genres?
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .Select(g => g.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
 
-        if (normalizedSource == "tmdb")
+        // 1. If we have a specific externalId and externalSource, try provider recommendations first
+        if (!string.IsNullOrWhiteSpace(externalId) && !string.IsNullOrWhiteSpace(normalizedSource))
         {
-            var tmdbSimilar = await GetTmdbSimilarAsync(externalId, normalizedType, pageSize, ct);
-            if (tmdbSimilar.Items.Count > 0) return tmdbSimilar;
-        }
-        else if (normalizedSource == "anilist" && int.TryParse(externalId, out var anilistId))
-        {
-            var anilistSimilar = await GetAniListSimilarAsync(anilistId, normalizedType, pageSize, ct);
-            if (anilistSimilar.Items.Count > 0) return anilistSimilar;
+            if (normalizedSource == "tmdb")
+            {
+                var tmdbSimilar = await GetTmdbSimilarAsync(externalId, normalizedType, pageSize, ct);
+                if (tmdbSimilar.Items.Count >= Math.Min(4, pageSize)) return tmdbSimilar;
+            }
+            else if (normalizedSource == "anilist" && int.TryParse(externalId, out var anilistId))
+            {
+                var anilistSimilar = await GetAniListSimilarAsync(anilistId, normalizedType, pageSize, ct);
+                if (anilistSimilar.Items.Count >= Math.Min(4, pageSize)) return anilistSimilar;
+            }
+            else if (normalizedSource == "igdb")
+            {
+                var igdbSimilar = await GetIgdbSimilarAsync(externalId, pageSize, ct);
+                if (igdbSimilar.Items.Count >= Math.Min(4, pageSize)) return igdbSimilar;
+            }
         }
 
-        // Fallback to trending for the media type
+        // 2. Discover by genres across the external service (using ALL genres passed)
+        if (genresList.Count > 0)
+        {
+            if (normalizedType is "anime" or "manga")
+            {
+                var anilistByGenres = await GetAniListByGenresAsync(normalizedType, genresList, pageSize, ct);
+                if (anilistByGenres.Items.Count > 0) return anilistByGenres;
+            }
+            else if (normalizedType is "movie" or "series")
+            {
+                var tmdbByGenres = await GetTmdbByGenresAsync(normalizedType, genresList, pageSize, ct);
+                if (tmdbByGenres.Items.Count > 0) return tmdbByGenres;
+            }
+        }
+
+        // 3. Fallback to trending for the media type
         return await GetTrendingAsync(normalizedType, 1, pageSize, ct);
     }
 
@@ -154,6 +236,9 @@ public class ExternalMediaService : IExternalMediaService
         var endpoints = isTv
             ? new[] { $"/tv/{externalId}/recommendations?page=1", $"/tv/{externalId}/similar?page=1" }
             : new[] { $"/movie/{externalId}/recommendations?page=1", $"/movie/{externalId}/similar?page=1" };
+
+        var items = new List<MediaDto>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { externalId };
 
         foreach (var endpoint in endpoints)
         {
@@ -174,27 +259,16 @@ public class ExternalMediaService : IExternalMediaService
                     continue;
                 }
 
-                var items = new List<MediaDto>();
                 foreach (var el in results.EnumerateArray())
                 {
                     var idStr = el.GetProperty("id").GetInt64().ToString();
-                    if (idStr == externalId) continue;
+                    if (!seenIds.Add(idStr)) continue;
 
                     items.Add(MapTmdbItemToDto(el, isTv ? "series" : "movie"));
                     if (items.Count >= pageSize) break;
                 }
 
-                if (items.Count > 0)
-                {
-                    return new PagedResponseDto<MediaDto>
-                    {
-                        Items = items,
-                        Page = 1,
-                        PageSize = pageSize,
-                        TotalItems = items.Count,
-                        TotalPages = 1
-                    };
-                }
+                if (items.Count >= pageSize) break;
             }
             catch (Exception ex)
             {
@@ -202,7 +276,159 @@ public class ExternalMediaService : IExternalMediaService
             }
         }
 
-        return EmptyPage(1, pageSize);
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = items,
+            Page = 1,
+            PageSize = pageSize,
+            TotalItems = items.Count,
+            TotalPages = 1
+        };
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetTmdbByGenresAsync(string type, List<string> genres, int pageSize, CancellationToken ct)
+    {
+        var isTv = type is "series" or "tv";
+        var map = isTv ? TvGenreMap : MovieGenreMap;
+        var genreIds = genres
+            .Select(g => map.TryGetValue(g, out var gid) ? gid : (int?)null)
+            .Where(gid => gid.HasValue)
+            .Select(gid => gid!.Value)
+            .Distinct()
+            .ToList();
+
+        if (genreIds.Count == 0)
+        {
+            return EmptyPage(1, pageSize);
+        }
+
+        var withGenres = string.Join("|", genreIds);
+        var endpoint = isTv
+            ? $"/discover/tv?with_genres={withGenres}&sort_by=popularity.desc&page=1&include_adult=false"
+            : $"/discover/movie?with_genres={withGenres}&sort_by=popularity.desc&page=1&include_adult=false";
+
+        using var request = CreateTmdbRequest(HttpMethod.Get, endpoint);
+        if (request == null) return EmptyPage(1, pageSize);
+
+        try
+        {
+            var response = await _httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) return EmptyPage(1, pageSize);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+            {
+                return EmptyPage(1, pageSize);
+            }
+
+            var items = new List<MediaDto>();
+            foreach (var el in results.EnumerateArray())
+            {
+                items.Add(MapTmdbItemToDto(el, isTv ? "series" : "movie"));
+                if (items.Count >= pageSize) break;
+            }
+
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching TMDb discover by genres {Genres}", withGenres);
+            return EmptyPage(1, pageSize);
+        }
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetAniListByGenresAsync(string type, List<string> genres, int pageSize, CancellationToken ct)
+    {
+        var anilistType = type.Equals("manga", StringComparison.OrdinalIgnoreCase) ? "MANGA" : "ANIME";
+
+        const string graphqlQuery = @"
+query ($type: MediaType, $genres: [String], $perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    media(type: $type, genre_in: $genres, sort: POPULARITY_DESC) {
+      id
+      type
+      title {
+        english
+        romaji
+      }
+      description
+      coverImage {
+        large
+      }
+      bannerImage
+      startDate {
+        year
+      }
+      averageScore
+      status
+      genres
+      episodes
+      chapters
+      volumes
+    }
+  }
+}";
+
+        var requestBody = new
+        {
+            query = graphqlQuery,
+            variables = new { type = anilistType, genres, perPage = Math.Min(pageSize, 20) }
+        };
+
+        try
+        {
+            using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, ct);
+
+            if (!response.IsSuccessStatusCode) return EmptyPage(1, pageSize);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("Page", out var pageElement) ||
+                !pageElement.TryGetProperty("media", out var mediaArray) ||
+                mediaArray.ValueKind != JsonValueKind.Array)
+            {
+                return EmptyPage(1, pageSize);
+            }
+
+            var items = new List<MediaDto>();
+            foreach (var el in mediaArray.EnumerateArray())
+            {
+                items.Add(MapAniListElementToDto(el, type));
+                if (items.Count >= pageSize) break;
+            }
+
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching AniList by genres");
+            return EmptyPage(1, pageSize);
+        }
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetIgdbSimilarAsync(string externalId, int pageSize, CancellationToken ct)
+    {
+        return await GetIgdbTrendingAsync(1, pageSize, ct);
     }
 
     private async Task<PagedResponseDto<MediaDto>> GetAniListSimilarAsync(int id, string type, int pageSize, CancellationToken ct)

@@ -234,51 +234,26 @@ public class MediaController : ControllerBase
             return Ok(new PagedResponseDto<MediaDto> { Page = 1, PageSize = pageSize, TotalItems = 0, TotalPages = 0 });
         }
 
-        var query = _context.Media.AsNoTracking()
-            .Where(m => m.Id != id && m.MediaType == media.MediaType);
+        var similar = await _externalMediaService.GetSimilarAsync(
+            media.MediaType,
+            media.ExternalSource,
+            media.ExternalId,
+            media.Genres,
+            pageSize,
+            ct);
 
-        if (media.Genres.Count > 0)
+        var filtered = similar.Items
+            .Where(m => (m.Id <= 0 || m.Id != id) && (string.IsNullOrWhiteSpace(media.ExternalId) || m.ExternalId != media.ExternalId))
+            .ToList();
+
+        return Ok(new PagedResponseDto<MediaDto>
         {
-            var firstGenre = media.Genres[0];
-            query = query.Where(m => m.Genres.Contains(firstGenre));
-        }
-
-        var entities = await query
-            .Take(pageSize)
-            .ToListAsync(ct);
-
-        if (entities.Count > 0)
-        {
-            var items = entities.Select(MediaDto.FromEntity).ToList();
-            return Ok(new PagedResponseDto<MediaDto>
-            {
-                Items = items,
-                Page = 1,
-                PageSize = pageSize,
-                TotalItems = items.Count,
-                TotalPages = 1
-            });
-        }
-
-        // When local database has no similar titles, fetch similar from external provider
-        if (!string.IsNullOrWhiteSpace(media.ExternalSource) && !string.IsNullOrWhiteSpace(media.ExternalId))
-        {
-            var externalSimilar = await _externalMediaService.GetSimilarAsync(
-                media.MediaType,
-                media.ExternalSource,
-                media.ExternalId,
-                pageSize,
-                ct);
-
-            if (externalSimilar.Items.Count > 0)
-            {
-                return Ok(externalSimilar);
-            }
-        }
-
-        // Fallback to trending for the media type
-        var trending = await _mediaService.GetTrendingMediaAsync(media.MediaType, 1, pageSize, ct);
-        return Ok(trending);
+            Items = filtered,
+            Page = 1,
+            PageSize = pageSize,
+            TotalItems = filtered.Count,
+            TotalPages = 1
+        });
     }
 
     [HttpGet("{id:int}/details")]
@@ -334,40 +309,44 @@ public class MediaController : ControllerBase
     [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetSimilarExternal(
         [FromQuery] string? type,
+        [FromQuery] string? source,
+        [FromQuery] string? id,
         [FromQuery] string? genre,
+        [FromQuery] string? genres,
         [FromQuery] int pageSize = 10,
         CancellationToken ct = default)
     {
         pageSize = Math.Clamp(pageSize, 1, 50);
 
-        var query = _context.Media.AsNoTracking().AsQueryable();
-
-        if (!string.IsNullOrWhiteSpace(type))
+        var genreList = new List<string>();
+        if (!string.IsNullOrWhiteSpace(genres))
         {
-            var normalizedType = type.Trim().ToLower();
-            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
+            genreList.AddRange(genres.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+        else if (!string.IsNullOrWhiteSpace(genre))
+        {
+            genreList.AddRange(genre.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         }
 
-        if (!string.IsNullOrWhiteSpace(genre))
-        {
-            query = query.Where(m => m.Genres.Contains(genre));
-        }
+        var similar = await _externalMediaService.GetSimilarAsync(
+            type ?? "movie",
+            source,
+            id,
+            genreList,
+            pageSize,
+            ct);
 
-        var entities = await query.Take(pageSize).ToListAsync(ct);
-        if (entities.Count > 0)
-        {
-            var items = entities.Select(MediaDto.FromEntity).ToList();
-            return Ok(new PagedResponseDto<MediaDto>
-            {
-                Items = items,
-                Page = 1,
-                PageSize = pageSize,
-                TotalItems = items.Count,
-                TotalPages = 1
-            });
-        }
+        var filtered = similar.Items
+            .Where(m => string.IsNullOrWhiteSpace(id) || m.ExternalId != id)
+            .ToList();
 
-        var trending = await _mediaService.GetTrendingMediaAsync(type, 1, pageSize, ct);
-        return Ok(trending);
+        return Ok(new PagedResponseDto<MediaDto>
+        {
+            Items = filtered,
+            Page = 1,
+            PageSize = pageSize,
+            TotalItems = filtered.Count,
+            TotalPages = 1
+        });
     }
 }
