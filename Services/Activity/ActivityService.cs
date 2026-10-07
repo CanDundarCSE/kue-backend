@@ -110,14 +110,15 @@ public class ActivityService : IActivityService
         var cutoff = DateTime.UtcNow.Date.AddDays(-days);
 
         // Fetch logged user activities
-        var activities = await _context.UserActivities
+        var allActivities = await _context.UserActivities
             .AsNoTracking()
             .Include(a => a.Media)
             .Include(a => a.CustomList)
             .Where(a => a.UserId == userId && a.CreatedAt >= cutoff)
             .OrderByDescending(a => a.CreatedAt)
-            .Take(limit)
             .ToListAsync(ct);
+
+        var activities = allActivities.Take(limit).ToList();
 
         // If no or few logged activities, synthesize from LibraryEntries so existing users have instant data
         if (activities.Count < 5)
@@ -129,6 +130,7 @@ public class ActivityService : IActivityService
                 if (!existingMediaIds.Contains(syn.MediaId ?? -1))
                 {
                     activities.Add(syn);
+                    allActivities.Add(syn);
                 }
             }
             activities = activities.OrderByDescending(a => a.CreatedAt).Take(limit).ToList();
@@ -138,7 +140,7 @@ public class ActivityService : IActivityService
         var items = activities.Select(a => MapToActivityItemDto(a)).ToList();
 
         // Calculate daily aggregation summaries (for heatmap/calendar)
-        var dailySummaries = CalculateDailySummaries(activities);
+        var dailySummaries = CalculateDailySummaries(allActivities.Count > 0 ? allActivities : activities);
 
         return new ActivityStatsDto
         {
