@@ -125,9 +125,16 @@ public class LibraryController : ControllerBase
         }
 
         var isCompleted = normalizedStatus == "completed";
-        if (isCompleted && isEpisodic && media.TotalUnits.HasValue)
+        if (isCompleted && isEpisodic)
         {
-            initialProgress = media.TotalUnits.Value;
+            if (media.TotalUnits.HasValue)
+            {
+                initialProgress = media.TotalUnits.Value;
+            }
+            else if (request.Progress.HasValue && request.Progress.Value > 0)
+            {
+                initialProgress = request.Progress.Value;
+            }
         }
 
         var entry = new LibraryEntry
@@ -221,15 +228,22 @@ public class LibraryController : ControllerBase
         if (!string.IsNullOrWhiteSpace(request.Status))
         {
             var newStatus = request.Status.Trim().ToLower();
-            if (newStatus == "completed" && entry.Status != "completed")
+            if (newStatus == "completed")
             {
                 entry.CompletedAt = DateTime.UtcNow;
-                if (isEpisodic && entry.Media.TotalUnits.HasValue)
+                if (isEpisodic)
                 {
-                    entry.Progress = entry.Media.TotalUnits.Value;
+                    if (entry.Media.TotalUnits.HasValue)
+                    {
+                        entry.Progress = entry.Media.TotalUnits.Value;
+                    }
+                    else if (request.Progress.HasValue)
+                    {
+                        entry.Progress = request.Progress.Value;
+                    }
                 }
             }
-            else if (newStatus != "completed")
+            else
             {
                 entry.CompletedAt = null;
             }
@@ -342,7 +356,7 @@ public class LibraryController : ControllerBase
         var newStatus = request.Status.Trim().ToLower();
         var isEpisodic = entry.Media.MediaType is "anime" or "series" or "manga";
 
-        if (newStatus == "completed" && entry.Status != "completed")
+        if (newStatus == "completed")
         {
             entry.CompletedAt = DateTime.UtcNow;
             if (isEpisodic && entry.Media.TotalUnits.HasValue)
@@ -350,7 +364,7 @@ public class LibraryController : ControllerBase
                 entry.Progress = entry.Media.TotalUnits.Value;
             }
         }
-        else if (newStatus != "completed")
+        else
         {
             entry.CompletedAt = null;
         }

@@ -14,11 +14,13 @@ public class MediaController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IMediaService _mediaService;
+    private readonly IExternalMediaService _externalMediaService;
 
-    public MediaController(AppDbContext context, IMediaService mediaService)
+    public MediaController(AppDbContext context, IMediaService mediaService, IExternalMediaService externalMediaService)
     {
         _context = context;
         _mediaService = mediaService;
+        _externalMediaService = externalMediaService;
     }
 
     [HttpGet]
@@ -263,5 +265,87 @@ public class MediaController : ControllerBase
     public async Task<IActionResult> GetDetails(int id, CancellationToken ct = default)
     {
         return await GetMediaById(id, ct);
+    }
+
+    [HttpGet("external")]
+    [ProducesResponseType(typeof(MediaDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetExternalMedia(
+        [FromQuery] string source,
+        [FromQuery] string id,
+        [FromQuery] string type,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(type))
+        {
+            return BadRequest(new MessageResponseDto("source, id, and type query parameters are required."));
+        }
+
+        var normalizedSource = source.Trim().ToLowerInvariant();
+        var normalizedType = type.Trim().ToLowerInvariant();
+
+        // Check if already stored in database
+        var existing = await _context.Media
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m =>
+                m.MediaType.ToLower() == normalizedType &&
+                m.ExternalSource.ToLower() == normalizedSource &&
+                m.ExternalId == id, ct);
+
+        if (existing != null)
+        {
+            return Ok(MediaDto.FromEntity(existing));
+        }
+
+        // Live lookup from external provider without inserting into database
+        var externalDto = await _externalMediaService.GetDetailsAsync(normalizedType, normalizedSource, id, ct);
+        if (externalDto == null)
+        {
+            return NotFound(new MessageResponseDto($"Media not found in external provider '{source}'."));
+        }
+
+        return Ok(externalDto);
+    }
+
+    [HttpGet("similar")]
+    [ProducesResponseType(typeof(PagedResponseDto<MediaDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetSimilarExternal(
+        [FromQuery] string? type,
+        [FromQuery] string? genre,
+        [FromQuery] int pageSize = 10,
+        CancellationToken ct = default)
+    {
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var query = _context.Media.AsNoTracking().AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            var normalizedType = type.Trim().ToLower();
+            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(genre))
+        {
+            query = query.Where(m => m.Genres.Contains(genre));
+        }
+
+        var entities = await query.Take(pageSize).ToListAsync(ct);
+        if (entities.Count > 0)
+        {
+            var items = entities.Select(MediaDto.FromEntity).ToList();
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            });
+        }
+
+        var trending = await _mediaService.GetTrendingMediaAsync(type, 1, pageSize, ct);
+        return Ok(trending);
     }
 }
