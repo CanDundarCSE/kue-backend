@@ -126,6 +126,172 @@ public class ExternalMediaService : IExternalMediaService
         return await GetTmdbTrendingAsync(normalizedType, page, pageSize, ct);
     }
 
+    public async Task<PagedResponseDto<MediaDto>> GetSimilarAsync(string mediaType, string externalSource, string externalId, int pageSize = 10, CancellationToken ct = default)
+    {
+        var normalizedSource = externalSource.Trim().ToLowerInvariant();
+        var normalizedType = NormalizeMediaType(mediaType) ?? mediaType.Trim().ToLowerInvariant();
+
+        if (normalizedSource == "tmdb")
+        {
+            var tmdbSimilar = await GetTmdbSimilarAsync(externalId, normalizedType, pageSize, ct);
+            if (tmdbSimilar.Items.Count > 0) return tmdbSimilar;
+        }
+        else if (normalizedSource == "anilist" && int.TryParse(externalId, out var anilistId))
+        {
+            var anilistSimilar = await GetAniListSimilarAsync(anilistId, normalizedType, pageSize, ct);
+            if (anilistSimilar.Items.Count > 0) return anilistSimilar;
+        }
+
+        // Fallback to trending for the media type
+        return await GetTrendingAsync(normalizedType, 1, pageSize, ct);
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetTmdbSimilarAsync(string externalId, string type, int pageSize, CancellationToken ct)
+    {
+        var normalizedType = type?.Trim().ToLowerInvariant() ?? "movie";
+        var isTv = normalizedType is "series" or "tv";
+
+        var endpoints = isTv
+            ? new[] { $"/tv/{externalId}/recommendations?page=1", $"/tv/{externalId}/similar?page=1" }
+            : new[] { $"/movie/{externalId}/recommendations?page=1", $"/movie/{externalId}/similar?page=1" };
+
+        foreach (var endpoint in endpoints)
+        {
+            using var request = CreateTmdbRequest(HttpMethod.Get, endpoint);
+            if (request == null) continue;
+
+            try
+            {
+                var response = await _httpClient.SendAsync(request, ct);
+                if (!response.IsSuccessStatusCode) continue;
+
+                var json = await response.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                var items = new List<MediaDto>();
+                foreach (var el in results.EnumerateArray())
+                {
+                    var idStr = el.GetProperty("id").GetInt64().ToString();
+                    if (idStr == externalId) continue;
+
+                    items.Add(MapTmdbItemToDto(el, isTv ? "series" : "movie"));
+                    if (items.Count >= pageSize) break;
+                }
+
+                if (items.Count > 0)
+                {
+                    return new PagedResponseDto<MediaDto>
+                    {
+                        Items = items,
+                        Page = 1,
+                        PageSize = pageSize,
+                        TotalItems = items.Count,
+                        TotalPages = 1
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error fetching TMDb recommendations for {Endpoint}", endpoint);
+            }
+        }
+
+        return EmptyPage(1, pageSize);
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetAniListSimilarAsync(int id, string type, int pageSize, CancellationToken ct)
+    {
+        var anilistType = type.Equals("manga", StringComparison.OrdinalIgnoreCase) ? "MANGA" : "ANIME";
+
+        const string graphqlQuery = @"
+query ($id: Int, $type: MediaType, $perPage: Int) {
+  Media(id: $id, type: $type) {
+    recommendations(page: 1, perPage: $perPage, sort: RATING_DESC) {
+      nodes {
+        mediaRecommendation {
+          id
+          type
+          title {
+            english
+            romaji
+          }
+          description
+          coverImage {
+            large
+          }
+          bannerImage
+          startDate {
+            year
+          }
+          averageScore
+          status
+          genres
+          episodes
+          chapters
+          volumes
+        }
+      }
+    }
+  }
+}";
+
+        var requestBody = new
+        {
+            query = graphqlQuery,
+            variables = new { id, type = anilistType, perPage = Math.Min(pageSize, 20) }
+        };
+
+        try
+        {
+            using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, ct);
+
+            if (!response.IsSuccessStatusCode) return EmptyPage(1, pageSize);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("Media", out var mediaElement) ||
+                !mediaElement.TryGetProperty("recommendations", out var recs) ||
+                !recs.TryGetProperty("nodes", out var nodes) ||
+                nodes.ValueKind != JsonValueKind.Array)
+            {
+                return EmptyPage(1, pageSize);
+            }
+
+            var items = new List<MediaDto>();
+            foreach (var node in nodes.EnumerateArray())
+            {
+                if (node.TryGetProperty("mediaRecommendation", out var medRec) && medRec.ValueKind == JsonValueKind.Object)
+                {
+                    items.Add(MapAniListElementToDto(medRec, type));
+                    if (items.Count >= pageSize) break;
+                }
+            }
+
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching AniList recommendations for ID {Id}", id);
+            return EmptyPage(1, pageSize);
+        }
+    }
+
     private static string? NormalizeMediaType(string? mediaType)
     {
         if (string.IsNullOrWhiteSpace(mediaType)) return null;

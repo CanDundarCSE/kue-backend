@@ -247,16 +247,38 @@ public class MediaController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        var items = entities.Select(MediaDto.FromEntity).ToList();
-
-        return Ok(new PagedResponseDto<MediaDto>
+        if (entities.Count > 0)
         {
-            Items = items,
-            Page = 1,
-            PageSize = pageSize,
-            TotalItems = items.Count,
-            TotalPages = 1
-        });
+            var items = entities.Select(MediaDto.FromEntity).ToList();
+            return Ok(new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            });
+        }
+
+        // When local database has no similar titles, fetch similar from external provider
+        if (!string.IsNullOrWhiteSpace(media.ExternalSource) && !string.IsNullOrWhiteSpace(media.ExternalId))
+        {
+            var externalSimilar = await _externalMediaService.GetSimilarAsync(
+                media.MediaType,
+                media.ExternalSource,
+                media.ExternalId,
+                pageSize,
+                ct);
+
+            if (externalSimilar.Items.Count > 0)
+            {
+                return Ok(externalSimilar);
+            }
+        }
+
+        // Fallback to trending for the media type
+        var trending = await _mediaService.GetTrendingMediaAsync(media.MediaType, 1, pageSize, ct);
+        return Ok(trending);
     }
 
     [HttpGet("{id:int}/details")]
