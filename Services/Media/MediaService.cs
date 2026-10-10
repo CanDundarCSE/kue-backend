@@ -184,4 +184,14 @@ public class MediaService : IMediaService
     {
         return await _externalMediaService.GetTrendingAsync(mediaType, page, pageSize, ct);
     }
+
+    public async Task<PagedResponseDto<MediaDto>> GetUpcomingMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    {
+        return await _externalMediaService.GetUpcomingAsync(mediaType, page, pageSize, ct);
+    }
+
+    public async Task<PagedResponseDto<MediaDto>> GetTopMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    {
+        return await _externalMediaService.GetTopAsync(mediaType, page, pageSize, ct);
+    }
 }

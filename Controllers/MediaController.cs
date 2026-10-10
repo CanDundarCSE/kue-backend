@@ -144,36 +144,8 @@ public class MediaController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        var query = _context.Media.AsNoTracking().Where(m => m.Score.HasValue);
-        if (!string.IsNullOrWhiteSpace(type))
-        {
-            var normalizedType = type.Trim().ToLower();
-            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
-        }
-
-        var totalItems = await query.CountAsync(ct);
-        if (totalItems > 0)
-        {
-            var entities = await query
-                .OrderByDescending(m => m.Score)
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync(ct);
-
-            var items = entities.Select(MediaDto.FromEntity).ToList();
-
-            return Ok(new PagedResponseDto<MediaDto>
-            {
-                Items = items,
-                Page = page,
-                PageSize = pageSize,
-                TotalItems = totalItems,
-                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
-            });
-        }
-
-        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
-        return Ok(trending);
+        var top = await _mediaService.GetTopMediaAsync(type, page, pageSize, ct);
+        return Ok(top);
     }
 
     [HttpGet("upcoming")]
@@ -187,39 +159,8 @@ public class MediaController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        var currentYear = DateTime.UtcNow.Year;
-        var query = _context.Media.AsNoTracking()
-            .Where(m => (m.Year.HasValue && m.Year.Value >= currentYear) || m.Status == "Upcoming" || m.Status == "Not Yet Aired");
-
-        if (!string.IsNullOrWhiteSpace(type))
-        {
-            var normalizedType = type.Trim().ToLower();
-            query = query.Where(m => m.MediaType.ToLower() == normalizedType);
-        }
-
-        var totalItems = await query.CountAsync(ct);
-        if (totalItems > 0)
-        {
-            var entities = await query
-                .OrderBy(m => m.Year)
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync(ct);
-
-            var items = entities.Select(MediaDto.FromEntity).ToList();
-
-            return Ok(new PagedResponseDto<MediaDto>
-            {
-                Items = items,
-                Page = page,
-                PageSize = pageSize,
-                TotalItems = totalItems,
-                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize)
-            });
-        }
-
-        var trending = await _mediaService.GetTrendingMediaAsync(type, page, pageSize, ct);
-        return Ok(trending);
+        var upcoming = await _mediaService.GetUpcomingMediaAsync(type, page, pageSize, ct);
+        return Ok(upcoming);
     }
 
     [HttpGet("{id:int}/similar")]

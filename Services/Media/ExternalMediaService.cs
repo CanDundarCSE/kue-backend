@@ -173,6 +173,46 @@ public class ExternalMediaService : IExternalMediaService
         ["Western"] = 37
     };
 
+    public async Task<PagedResponseDto<MediaDto>> GetUpcomingAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    {
+        var normalizedType = NormalizeMediaType(mediaType);
+
+        if (normalizedType is "anime" or "manga")
+        {
+            // For AniList, we'll use trending as a proxy for upcoming since there's no direct upcoming endpoint
+            return await GetAniListTrendingAsync(normalizedType, page, pageSize, ct);
+        }
+
+        if (normalizedType is "game")
+        {
+            // For IGDB, we'll use trending as a proxy for upcoming
+            return await GetIgdbTrendingAsync(page, pageSize, ct);
+        }
+
+        // For TMDb (movies/series), we'll use the actual upcoming endpoint
+        return await GetTmdbUpcomingAsync(normalizedType ?? "movie", page, pageSize, ct);
+    }
+
+    public async Task<PagedResponseDto<MediaDto>> GetTopAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    {
+        var normalizedType = NormalizeMediaType(mediaType);
+
+        if (normalizedType is "anime" or "manga")
+        {
+            // For AniList, we'll use trending as a proxy for top since there's no direct top endpoint
+            return await GetAniListTrendingAsync(normalizedType, page, pageSize, ct);
+        }
+
+        if (normalizedType is "game")
+        {
+            // For IGDB, we'll use trending as a proxy for top
+            return await GetIgdbTrendingAsync(page, pageSize, ct);
+        }
+
+        // For TMDb (movies/series), we'll use the top_rated endpoint
+        return await GetTmdbTopRatedAsync(normalizedType ?? "movie", page, pageSize, ct);
+    }
+
     public async Task<PagedResponseDto<MediaDto>> GetSimilarAsync(
         string mediaType,
         string? externalSource = null,
@@ -1194,12 +1234,118 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
             PageSize = pageSize,
             TotalItems = 1,
             TotalPages = 1
-        };
-    }
+         };
+     }
 
-    // -------------------------------------------------------------------------
-    // IGDB / Twitch Integration (Games)
-    // -------------------------------------------------------------------------
+     // -------------------------------------------------------------------------
+     // TMDb Integration (Movies & Series) - Additional Endpoints
+     // -------------------------------------------------------------------------
+
+     private async Task<PagedResponseDto<MediaDto>> GetTmdbUpcomingAsync(string type, int page, int pageSize, CancellationToken ct)
+     {
+         var normalizedType = type ?? "movie";
+         var isTv = normalizedType is "series" or "tv";
+         var endpoint = isTv ? $"/tv/on_the_air?page={page}" : $"/movie/upcoming?page={page}";
+
+         using var request = CreateTmdbRequest(HttpMethod.Get, endpoint);
+         if (request == null)
+         {
+             return GetFallbackSampleTmdb(isTv ? "series" : "movie", page, pageSize);
+         }
+
+         try
+         {
+             var response = await _httpClient.SendAsync(request, ct);
+             if (!response.IsSuccessStatusCode)
+             {
+                 return EmptyPage(page, pageSize);
+             }
+
+             var json = await response.Content.ReadAsStringAsync(ct);
+             using var doc = JsonDocument.Parse(json);
+             var root = doc.RootElement;
+
+             if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+             {
+                 return EmptyPage(page, pageSize);
+             }
+
+             var items = new List<MediaDto>();
+             foreach (var el in results.EnumerateArray())
+             {
+                 items.Add(MapTmdbItemToDto(el, isTv ? "series" : "movie"));
+             }
+
+             return new PagedResponseDto<MediaDto>
+             {
+                 Items = items,
+                 Page = page,
+                 PageSize = pageSize,
+                 TotalItems = items.Count,
+                 TotalPages = 1
+             };
+         }
+         catch (Exception ex)
+         {
+             _logger.LogError(ex, "Error fetching TMDb upcoming");
+             return EmptyPage(page, pageSize);
+         }
+     }
+
+     private async Task<PagedResponseDto<MediaDto>> GetTmdbTopRatedAsync(string type, int page, int pageSize, CancellationToken ct)
+     {
+         var normalizedType = type ?? "movie";
+         var isTv = normalizedType is "series" or "tv";
+         var endpoint = isTv ? $"/tv/top_rated?page={page}" : $"/movie/top_rated?page={page}";
+
+         using var request = CreateTmdbRequest(HttpMethod.Get, endpoint);
+         if (request == null)
+         {
+             return GetFallbackSampleTmdb(isTv ? "series" : "movie", page, pageSize);
+         }
+
+         try
+         {
+             var response = await _httpClient.SendAsync(request, ct);
+             if (!response.IsSuccessStatusCode)
+             {
+                 return EmptyPage(page, pageSize);
+             }
+
+             var json = await response.Content.ReadAsStringAsync(ct);
+             using var doc = JsonDocument.Parse(json);
+             var root = doc.RootElement;
+
+             if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+             {
+                 return EmptyPage(page, pageSize);
+             }
+
+             var items = new List<MediaDto>();
+             foreach (var el in results.EnumerateArray())
+             {
+                 items.Add(MapTmdbItemToDto(el, isTv ? "series" : "movie"));
+             }
+
+             return new PagedResponseDto<MediaDto>
+             {
+                 Items = items,
+                 Page = page,
+                 PageSize = pageSize,
+                 TotalItems = items.Count,
+                 TotalPages = 1
+             };
+         }
+         catch (Exception ex)
+         {
+             _logger.LogError(ex, "Error fetching TMDb top rated");
+             return EmptyPage(page, pageSize);
+         }
+     }
+
+     // -------------------------------------------------------------------------
+     // IGDB / Twitch Integration (Games)
+     // -------------------------------------------------------------------------
 
     private async Task<string?> GetTwitchAccessTokenAsync(CancellationToken ct)
     {
