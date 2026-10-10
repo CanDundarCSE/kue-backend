@@ -9,9 +9,11 @@ public class ReviewDto
     public string MediaTitle { get; set; } = null!;
     public string MediaType { get; set; } = null!;
     public string MediaCoverImage { get; set; } = null!;
+    public int? MediaYear { get; set; }
     public string Content { get; set; } = null!;
     public int? Rating { get; set; }
     public bool ContainsSpoilers { get; set; }
+    public bool IsPublic { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 }

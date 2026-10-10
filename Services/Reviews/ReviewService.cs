@@ -17,13 +17,17 @@ public class ReviewService : IReviewService
         _logger = logger;
     }
 
+    private const int MaxContentLength = 255;
+
     public async Task<ReviewDto?> GetReviewByIdAsync(int reviewId, int? currentUserId = null, CancellationToken ct = default)
     {
         var review = await _context.Reviews
             .AsNoTracking()
             .Include(r => r.User)
             .Include(r => r.Media)
-            .FirstOrDefaultAsync(r => r.Id == reviewId, ct);
+            // A private review is only readable by its author.
+            .Where(r => r.Id == reviewId && (r.IsPublic || r.UserId == currentUserId))
+            .FirstOrDefaultAsync(ct);
 
         if (review is null)
             return null;
@@ -51,7 +55,10 @@ public class ReviewService : IReviewService
             .AsNoTracking()
             .Include(r => r.User)
             .Include(r => r.Media)
-            .Where(r => r.MediaId == mediaId);
+            .Where(r => r.MediaId == mediaId)
+            // Public feed: other people's private reviews stay hidden, but the
+            // signed-in author still sees their own.
+            .Where(r => r.IsPublic || r.UserId == currentUserId);
 
         var totalCount = await query.CountAsync(ct);
 
@@ -64,6 +71,49 @@ public class ReviewService : IReviewService
         var dtos = reviews.Select(r => MapToDto(r)).ToList();
 
         return (dtos, totalCount);
+    }
+
+    public async Task<(List<ReviewDto> Reviews, int TotalCount)> GetUserReviewsAsync(
+        int userId,
+        int page,
+        int pageSize,
+        bool? isPublic = null,
+        CancellationToken ct = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var query = _context.Reviews
+            .AsNoTracking()
+            .Include(r => r.User)
+            .Include(r => r.Media)
+            .Where(r => r.UserId == userId);
+
+        if (isPublic.HasValue)
+        {
+            query = query.Where(r => r.IsPublic == isPublic.Value);
+        }
+
+        var totalCount = await query.CountAsync(ct);
+
+        var reviews = await query
+            .OrderByDescending(r => r.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return (reviews.Select(r => MapToDto(r)).ToList(), totalCount);
+    }
+
+    public async Task<ReviewDto?> GetUserReviewByMediaAsync(int userId, int mediaId, CancellationToken ct = default)
+    {
+        var review = await _context.Reviews
+            .AsNoTracking()
+            .Include(r => r.User)
+            .Include(r => r.Media)
+            .FirstOrDefaultAsync(r => r.UserId == userId && r.MediaId == mediaId, ct);
+
+        return review is null ? null : MapToDto(review);
     }
 
     public async Task<ReviewDto> CreateReviewAsync(int userId, CreateReviewRequest request, CancellationToken ct = default)
@@ -87,13 +137,27 @@ public class ReviewService : IReviewService
             throw new ArgumentException("Rating must be between 1 and 10.");
         }
 
+        var content = request.Content?.Trim() ?? string.Empty;
+        if (content.Length == 0)
+        {
+            throw new ArgumentException("Review content cannot be empty.");
+        }
+
+        // The column is varchar(255); without this guard an over-long review
+        // surfaces as an opaque 500 from the provider.
+        if (content.Length > MaxContentLength)
+        {
+            throw new ArgumentException($"Review content cannot exceed {MaxContentLength} characters.");
+        }
+
         var review = new Review
         {
             UserId = userId,
             MediaId = request.MediaId,
-            Content = request.Content.Trim(),
+            Content = content,
             Rating = request.Rating,
             ContainsSpoilers = request.ContainsSpoilers,
+            IsPublic = request.IsPublic,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -121,9 +185,21 @@ public class ReviewService : IReviewService
             throw new ArgumentException("Rating must be between 1 and 10.");
         }
 
-        review.Content = request.Content.Trim();
+        var content = request.Content?.Trim() ?? string.Empty;
+        if (content.Length == 0)
+        {
+            throw new ArgumentException("Review content cannot be empty.");
+        }
+
+        if (content.Length > MaxContentLength)
+        {
+            throw new ArgumentException($"Review content cannot exceed {MaxContentLength} characters.");
+        }
+
+        review.Content = content;
         review.Rating = request.Rating;
         review.ContainsSpoilers = request.ContainsSpoilers;
+        review.IsPublic = request.IsPublic;
         review.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(ct);
@@ -161,9 +237,11 @@ public class ReviewService : IReviewService
             MediaTitle = review.Media.Title,
             MediaType = review.Media.MediaType,
             MediaCoverImage = review.Media.CoverImage ?? string.Empty,
+            MediaYear = review.Media.Year,
             Content = review.Content,
             Rating = review.Rating,
             ContainsSpoilers = review.ContainsSpoilers,
+            IsPublic = review.IsPublic,
             CreatedAt = review.CreatedAt,
             UpdatedAt = review.UpdatedAt
         };

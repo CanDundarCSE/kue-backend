@@ -86,6 +86,56 @@ public class ReviewsController : ControllerBase
         return Ok(review);
     }
 
+    [HttpGet("me/reviews")]
+    [Authorize]
+    [ProducesResponseType(typeof(PagedResponseDto<ReviewDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetMyReviews(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] bool? isPublic = null,
+        CancellationToken ct = default)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var (reviews, totalCount) = await _reviewService.GetUserReviewsAsync(
+            userId.Value, page, pageSize, isPublic, ct);
+
+        var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        return Ok(new PagedResponseDto<ReviewDto>
+        {
+            Items = reviews,
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = totalCount,
+            TotalPages = totalPages
+        });
+    }
+
+    [HttpGet("me/reviews/by-media/{mediaId:int}")]
+    [Authorize]
+    [ProducesResponseType(typeof(ReviewDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetMyReviewForMedia(int mediaId, CancellationToken ct = default)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+            return Unauthorized();
+
+        var review = await _reviewService.GetUserReviewByMediaAsync(userId.Value, mediaId, ct);
+        if (review is null)
+            return NotFound(new MessageResponseDto("Review not found."));
+
+        return Ok(review);
+    }
+
     [HttpPost("me/reviews")]
     [Authorize]
     [ProducesResponseType(typeof(ReviewDto), StatusCodes.Status201Created)]

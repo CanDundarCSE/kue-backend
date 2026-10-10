@@ -234,6 +234,7 @@ public class AppDbContext : DbContext
 
             entity.Property(r => r.Content).HasMaxLength(255).IsRequired();
             entity.Property(r => r.ContainsSpoilers).HasDefaultValue(false);
+            entity.Property(r => r.IsPublic).HasDefaultValue(true);
 
             entity.HasOne(r => r.User)
                   .WithMany(u => u.Reviews)
