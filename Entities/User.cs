@@ -25,4 +25,5 @@ public class User
     public List<Notification> Notifications { get; set; } = [];
     public List<Notification> TriggeredNotifications { get; set; } = [];
     public List<UserActivity> Activities { get; set; } = [];
+    public List<Review> Reviews { get; set; } = [];
 }

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Kue.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Kue.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261010112947_AddReviewsTable")]
+    partial class AddReviewsTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -429,6 +432,11 @@ namespace Kue.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("LikesCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.Property<int>("MediaId")
                         .HasColumnType("integer");
 
@@ -445,12 +453,32 @@ namespace Kue.Api.Migrations
 
                     b.HasIndex("CreatedAt");
 
+                    b.HasIndex("LikesCount");
+
                     b.HasIndex("MediaId");
 
                     b.HasIndex("UserId", "MediaId")
                         .IsUnique();
 
                     b.ToTable("Reviews");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ReviewLike", b =>
+                {
+                    b.Property<int>("ReviewId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("ReviewId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("ReviewLikes");
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
@@ -717,6 +745,25 @@ namespace Kue.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.ReviewLike", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.Review", "Review")
+                        .WithMany("Likes")
+                        .HasForeignKey("ReviewId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("ReviewLikes")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Review");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.UserActivity", b =>
                 {
                     b.HasOne("Kue.Api.Entities.CustomList", "CustomList")
@@ -756,6 +803,11 @@ namespace Kue.Api.Migrations
                     b.Navigation("Reviews");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.Review", b =>
+                {
+                    b.Navigation("Likes");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.User", b =>
                 {
                     b.Navigation("Activities");
@@ -769,6 +821,8 @@ namespace Kue.Api.Migrations
                     b.Navigation("ReceivedFriendRequests");
 
                     b.Navigation("RefreshTokens");
+
+                    b.Navigation("ReviewLikes");
 
                     b.Navigation("Reviews");
 

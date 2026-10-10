@@ -16,6 +16,7 @@ public class AppDbContext : DbContext
     public DbSet<Friendship> Friendships => Set<Friendship>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<UserActivity> UserActivities => Set<UserActivity>();
+    public DbSet<Review> Reviews => Set<Review>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -221,6 +222,30 @@ public class AppDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(a => a.CustomListId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Review>(entity =>
+        {
+            entity.HasKey(r => r.Id);
+
+            entity.HasIndex(r => new { r.UserId, r.MediaId }).IsUnique();
+            entity.HasIndex(r => r.MediaId);
+            entity.HasIndex(r => r.CreatedAt);
+
+            entity.Property(r => r.Content).HasMaxLength(255).IsRequired();
+            entity.Property(r => r.ContainsSpoilers).HasDefaultValue(false);
+
+            entity.HasOne(r => r.User)
+                  .WithMany(u => u.Reviews)
+                  .HasForeignKey(r => r.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(r => r.Media)
+                  .WithMany(m => m.Reviews)
+                  .HasForeignKey(r => r.MediaId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasQueryFilter(r => !r.Media.IsDeleted);
         });
     }
 }

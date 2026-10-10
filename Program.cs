@@ -29,6 +29,7 @@ builder.Services.AddScoped<Kue.Api.Services.Media.IExternalMediaService, Kue.Api
 builder.Services.AddScoped<Kue.Api.Services.Media.IMediaService, Kue.Api.Services.Media.MediaService>();
 builder.Services.AddScoped<Kue.Api.Services.Notifications.INotificationService, Kue.Api.Services.Notifications.NotificationService>();
 builder.Services.AddScoped<Kue.Api.Services.Activity.IActivityService, Kue.Api.Services.Activity.ActivityService>();
+builder.Services.AddScoped<Kue.Api.Services.Reviews.IReviewService, Kue.Api.Services.Reviews.ReviewService>();
 builder.Services.AddBackgroundTaskQueue();
 builder.Services.AddHostedService<TokenCleanupBackgroundService>();
 builder.Services.AddBrevoEmail(builder.Configuration);
