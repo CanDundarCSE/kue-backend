@@ -466,9 +466,146 @@ query ($type: MediaType, $genres: [String], $perPage: Int) {
         }
     }
 
+    private const string IgdbGameFields = "id, name, summary, first_release_date, total_rating, rating, cover.image_id, screenshots.image_id, genres.name, platforms.name, involved_companies.company.name, involved_companies.developer";
+
     private async Task<PagedResponseDto<MediaDto>> GetIgdbSimilarAsync(string externalId, int pageSize, CancellationToken ct)
     {
-        return await GetIgdbTrendingAsync(1, pageSize, ct);
+        var token = await GetTwitchAccessTokenAsync(ct);
+        var clientId = _configuration["Igdb:ClientId"];
+
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(clientId) || !long.TryParse(externalId, out var gameId))
+        {
+            return await GetIgdbTrendingAsync(1, pageSize, ct);
+        }
+
+        // 1. Load IGDB's own similarity ranking plus the game's genre ids.
+        var (similarIds, genreIds) = await GetIgdbSimilaritySignalsAsync(clientId, token, gameId, pageSize, ct);
+
+        var picked = new List<MediaDto>();
+        var seen = new HashSet<string>(StringComparer.Ordinal) { externalId };
+
+        // 2. Resolve the ranked similar ids to full cards, preserving IGDB's
+        // relevance order (the id-filter query does not return them ordered).
+        if (similarIds.Count > 0)
+        {
+            var details = await ExecuteIgdbQueryAsync(
+                $"fields {IgdbGameFields}; where id = ({string.Join(',', similarIds)}); limit {similarIds.Count};",
+                clientId, token, 1, similarIds.Count, ct);
+
+            var byId = details.Items
+                .GroupBy(m => m.ExternalId)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+            foreach (var id in similarIds)
+            {
+                if (picked.Count >= pageSize) break;
+                if (byId.TryGetValue(id, out var dto) && seen.Add(id))
+                {
+                    picked.Add(dto);
+                }
+            }
+        }
+
+        // 3. Top up with same-genre discovery when the ranking runs short, so
+        // the rail stays specific to this game instead of going global.
+        var need = pageSize - picked.Count;
+        if (need > 0 && genreIds.Count > 0)
+        {
+            var fetchCount = need + seen.Count + 2;
+            var discovery = await ExecuteIgdbQueryAsync(
+                $"fields {IgdbGameFields}; where genres = ({string.Join(',', genreIds)}) & total_rating_count > 5; sort total_rating desc; limit {fetchCount};",
+                clientId, token, 1, fetchCount, ct);
+
+            foreach (var dto in discovery.Items)
+            {
+                if (picked.Count >= pageSize) break;
+                if (seen.Add(dto.ExternalId))
+                {
+                    picked.Add(dto);
+                }
+            }
+        }
+
+        // 4. Last resort: trending filler so the rail never comes back short.
+        need = pageSize - picked.Count;
+        if (need > 0)
+        {
+            var trending = await GetIgdbTrendingAsync(1, need + seen.Count + 1, ct);
+            foreach (var dto in trending.Items)
+            {
+                if (picked.Count >= pageSize) break;
+                if (seen.Add(dto.ExternalId))
+                {
+                    picked.Add(dto);
+                }
+            }
+        }
+
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = picked,
+            Page = 1,
+            PageSize = pageSize,
+            TotalItems = picked.Count,
+            TotalPages = 1
+        };
+    }
+
+    private async Task<(List<string> SimilarIds, List<long> GenreIds)> GetIgdbSimilaritySignalsAsync(
+        string clientId, string token, long gameId, int pageSize, CancellationToken ct)
+    {
+        var similarIds = new List<string>();
+        var genreIds = new List<long>();
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.igdb.com/v4/games");
+            request.Headers.Add("Client-ID", clientId);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Content = new StringContent(
+                $"fields similar_games, genres; where id = {gameId}; limit 1;",
+                Encoding.UTF8, "text/plain");
+
+            var response = await _httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) return (similarIds, genreIds);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array || doc.RootElement.GetArrayLength() == 0)
+            {
+                return (similarIds, genreIds);
+            }
+
+            var game = doc.RootElement[0];
+            if (game.TryGetProperty("similar_games", out var similarGames) && similarGames.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var id in similarGames.EnumerateArray())
+                {
+                    if (similarIds.Count >= pageSize) break;
+                    if (id.ValueKind == JsonValueKind.Number)
+                    {
+                        similarIds.Add(id.GetInt64().ToString());
+                    }
+                }
+            }
+
+            if (game.TryGetProperty("genres", out var genres) && genres.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var genre in genres.EnumerateArray())
+                {
+                    if (genre.ValueKind == JsonValueKind.Number)
+                    {
+                        genreIds.Add(genre.GetInt64());
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error fetching IGDB similarity signals for game {GameId}", gameId);
+        }
+
+        return (similarIds, genreIds);
     }
 
     private async Task<PagedResponseDto<MediaDto>> GetAniListSimilarAsync(int id, string type, int pageSize, CancellationToken ct)
