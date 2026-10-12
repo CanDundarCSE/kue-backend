@@ -17,6 +17,8 @@ public class AppDbContext : DbContext
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<UserActivity> UserActivities => Set<UserActivity>();
     public DbSet<Review> Reviews => Set<Review>();
+    public DbSet<ImportJob> ImportJobs => Set<ImportJob>();
+    public DbSet<ImportItem> ImportItems => Set<ImportItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +99,12 @@ public class AppDbContext : DbContext
 
             entity.Property(e => e.Status).HasMaxLength(50).IsRequired();
             entity.Property(e => e.Platform).HasMaxLength(100);
+
+            // Optimistic concurrency via PostgreSQL's xmin system column: overlapping
+            // writes to the same entry (import worker vs. user request) fail with
+            // DbUpdateConcurrencyException instead of silently losing an update.
+            // No schema change: xmin is maintained by PostgreSQL itself.
+            entity.Property<uint>("xmin").IsRowVersion();
 
             entity.HasOne(e => e.User)
                   .WithMany(u => u.LibraryEntries)
@@ -253,6 +261,41 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasQueryFilter(r => !r.Media.IsDeleted);
+        });
+
+        modelBuilder.Entity<ImportJob>(entity =>
+        {
+            entity.HasKey(j => j.Id);
+            entity.HasIndex(j => new { j.UserId, j.CreatedAt });
+            entity.Property(j => j.Source).HasMaxLength(50).IsRequired();
+            entity.Property(j => j.FileName).HasMaxLength(300);
+            entity.Property(j => j.Status).HasMaxLength(50).IsRequired();
+            entity.Property(j => j.Error).HasMaxLength(1000);
+
+            entity.HasOne(j => j.User)
+                  .WithMany()
+                  .HasForeignKey(j => j.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ImportItem>(entity =>
+        {
+            entity.HasKey(i => i.Id);
+            entity.HasIndex(i => i.JobId);
+            entity.Property(i => i.Title).HasMaxLength(300).IsRequired();
+            entity.Property(i => i.MediaType).HasMaxLength(50);
+            entity.Property(i => i.ExternalSource).HasMaxLength(50);
+            entity.Property(i => i.ExternalId).HasMaxLength(100);
+            entity.Property(i => i.ImportedStatus).HasMaxLength(50);
+            entity.Property(i => i.ImportedPlatform).HasMaxLength(100);
+            entity.Property(i => i.Status).HasMaxLength(50).IsRequired();
+            entity.Property(i => i.Decision).HasMaxLength(20);
+            entity.Property(i => i.Error).HasMaxLength(1000);
+
+            entity.HasOne(i => i.Job)
+                  .WithMany(j => j.Items)
+                  .HasForeignKey(i => i.JobId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

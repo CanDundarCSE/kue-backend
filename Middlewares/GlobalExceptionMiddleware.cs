@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Kue.Api.Dtos.Common;
+using Microsoft.EntityFrameworkCore;
 
 namespace Kue.Api.Middlewares;
 
@@ -55,6 +56,7 @@ public class GlobalExceptionMiddleware
             UnauthorizedAccessException => (StatusCodes.Status401Unauthorized, "Unauthorized access."),
             KeyNotFoundException => (StatusCodes.Status404NotFound, "The requested resource was not found."),
             BadHttpRequestException => (StatusCodes.Status400BadRequest, "Bad request."),
+            DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "This entry changed elsewhere. Please refresh and try again."),
             InvalidOperationException invEx => (StatusCodes.Status400BadRequest, invEx.Message),
             _ => (StatusCodes.Status500InternalServerError, _env.IsDevelopment()
                 ? $"Internal server error: {exception.Message}"

@@ -136,6 +136,138 @@ namespace Kue.Api.Migrations
                     b.ToTable("Friendships");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.ImportItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CandidateJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ConflictJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Decision")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ExternalSource")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<bool?>("ImportedFavorite")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ImportedPlatform")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int?>("ImportedProgress")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ImportedRating")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ImportedStatus")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int>("JobId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("MatchedMediaId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("MediaType")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId");
+
+                    b.ToTable("ImportItems");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ImportJob", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AddedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("ProcessedItems")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("SkippedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int>("TotalItems")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UpdatedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("ImportJobs");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.LibraryEntry", b =>
                 {
                     b.Property<int>("Id")
@@ -176,6 +308,12 @@ namespace Kue.Api.Migrations
 
                     b.Property<int>("UserId")
                         .HasColumnType("integer");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id");
 
@@ -661,6 +799,28 @@ namespace Kue.Api.Migrations
                     b.Navigation("Requester");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.ImportItem", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.ImportJob", "Job")
+                        .WithMany("Items")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ImportJob", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.LibraryEntry", b =>
                 {
                     b.HasOne("Kue.Api.Entities.Media", "Media")
@@ -780,6 +940,11 @@ namespace Kue.Api.Migrations
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.CustomList", b =>
+                {
+                    b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("Kue.Api.Entities.ImportJob", b =>
                 {
                     b.Navigation("Items");
                 });
