@@ -236,6 +236,10 @@ public class AppDbContext : DbContext
             entity.Property(r => r.ContainsSpoilers).HasDefaultValue(false);
             entity.Property(r => r.IsPublic).HasDefaultValue(true);
 
+            // Spoiler spans live in a single jsonb column; reviews are never
+            // queried by span, so no index is needed.
+            entity.OwnsMany(r => r.Spoilers, b => b.ToJson());
+
             entity.HasOne(r => r.User)
                   .WithMany(u => u.Reviews)
                   .HasForeignKey(r => r.UserId)

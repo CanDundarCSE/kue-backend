@@ -10,6 +10,13 @@ public class Review
     public bool ContainsSpoilers { get; set; } = false;
 
     /// <summary>
+    /// Spoiler-masked spans as UTF-16 char offsets (exclusive end) into
+    /// <see cref="Content"/>. Stored as a JSON column; empty when the review
+    /// has no masked parts.
+    /// </summary>
+    public List<SpoilerRange> Spoilers { get; set; } = [];
+
+    /// <summary>
     /// Private reviews are only visible to their author. Public reviews are
     /// returned by the per-media review feed.
     /// </summary>
@@ -20,4 +27,15 @@ public class Review
 
     public User User { get; set; } = null!;
     public Media Media { get; set; } = null!;
+}
+
+/// <summary>
+/// One spoiler-masked span. <see cref="Start"/> is inclusive,
+/// <see cref="End"/> exclusive, both UTF-16 char offsets into the review
+/// content (matching C# string indexing and JS selection offsets).
+/// </summary>
+public class SpoilerRange
+{
+    public int Start { get; set; }
+    public int End { get; set; }
 }

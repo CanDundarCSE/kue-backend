@@ -717,7 +717,32 @@ namespace Kue.Api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.OwnsMany("Kue.Api.Entities.SpoilerRange", "Spoilers", b1 =>
+                        {
+                            b1.Property<int>("ReviewId");
+
+                            b1.Property<int>("__synthesizedOrdinal")
+                                .ValueGeneratedOnAdd();
+
+                            b1.Property<int>("End");
+
+                            b1.Property<int>("Start");
+
+                            b1.HasKey("ReviewId", "__synthesizedOrdinal");
+
+                            b1.ToTable("Reviews");
+
+                            b1
+                                .ToJson("Spoilers")
+                                .HasColumnType("jsonb");
+
+                            b1.WithOwner()
+                                .HasForeignKey("ReviewId");
+                        });
+
                     b.Navigation("Media");
+
+                    b.Navigation("Spoilers");
 
                     b.Navigation("User");
                 });

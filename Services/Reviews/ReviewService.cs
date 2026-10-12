@@ -18,6 +18,46 @@ public class ReviewService : IReviewService
     }
 
     private const int MaxContentLength = 255;
+    private const int MaxSpoilerRanges = 20;
+
+    /// <summary>
+    /// Normalizes client-supplied spoiler spans against the stored content:
+    /// clamps to bounds, drops degenerate spans, sorts, merges overlaps and
+    /// caps the count. Lenient by design — a span that drifts a char due to
+    /// trimming still masks the right text instead of failing the request.
+    /// </summary>
+    private static List<SpoilerRange> NormalizeSpoilers(
+        IEnumerable<SpoilerRangeDto>? spoilers, int contentLength)
+    {
+        if (spoilers is null || contentLength <= 0) return [];
+
+        var clamped = new List<SpoilerRange>();
+        foreach (var spoiler in spoilers)
+        {
+            var start = Math.Max(0, spoiler.Start);
+            var end = Math.Min(contentLength, spoiler.End);
+            if (start < end) clamped.Add(new SpoilerRange { Start = start, End = end });
+        }
+
+        clamped.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        var merged = new List<SpoilerRange>();
+        foreach (var span in clamped)
+        {
+            if (merged.Count > 0 && span.Start <= merged[^1].End)
+            {
+                merged[^1].End = Math.Max(merged[^1].End, span.End);
+            }
+            else
+            {
+                merged.Add(span);
+            }
+
+            if (merged.Count >= MaxSpoilerRanges) break;
+        }
+
+        return merged;
+    }
 
     public async Task<ReviewDto?> GetReviewByIdAsync(int reviewId, int? currentUserId = null, CancellationToken ct = default)
     {
@@ -160,6 +200,9 @@ public class ReviewService : IReviewService
             IsPublic = request.IsPublic,
             CreatedAt = DateTime.UtcNow
         };
+        review.Spoilers = NormalizeSpoilers(request.Spoilers, content.Length);
+        // Ranges imply spoilers even if the flag was left off.
+        review.ContainsSpoilers = review.ContainsSpoilers || review.Spoilers.Count > 0;
 
         _context.Reviews.Add(review);
         await _context.SaveChangesAsync(ct);
@@ -199,6 +242,9 @@ public class ReviewService : IReviewService
         review.Content = content;
         review.Rating = request.Rating;
         review.ContainsSpoilers = request.ContainsSpoilers;
+        review.Spoilers = NormalizeSpoilers(request.Spoilers, content.Length);
+        // Ranges imply spoilers even if the flag was left off.
+        review.ContainsSpoilers = review.ContainsSpoilers || review.Spoilers.Count > 0;
         review.IsPublic = request.IsPublic;
         review.UpdatedAt = DateTime.UtcNow;
 
@@ -241,6 +287,9 @@ public class ReviewService : IReviewService
             Content = review.Content,
             Rating = review.Rating,
             ContainsSpoilers = review.ContainsSpoilers,
+            Spoilers = review.Spoilers
+                .Select(s => new SpoilerRangeDto { Start = s.Start, End = s.End })
+                .ToList(),
             IsPublic = review.IsPublic,
             CreatedAt = review.CreatedAt,
             UpdatedAt = review.UpdatedAt
