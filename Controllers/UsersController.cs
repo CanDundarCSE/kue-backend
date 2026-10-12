@@ -548,7 +548,9 @@ public class UsersController : ControllerBase
                 TotalUnits = entry.Media.TotalUnits,
                 UnitName = entry.Media.UnitName,
                 RuntimeMinutes = entry.Media.RuntimeMinutes,
-                Platforms = entry.Media.Platforms
+                Platforms = entry.Media.Platforms,
+                ExternalSource = entry.Media.ExternalSource,
+                ExternalId = entry.Media.ExternalId
             }
         };
     }

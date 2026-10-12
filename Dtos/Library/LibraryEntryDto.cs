@@ -36,4 +36,6 @@ public class LibraryMediaSummaryDto
     public string? UnitName { get; set; }
     public int? RuntimeMinutes { get; set; }
     public List<string>? Platforms { get; set; }
+    public string? ExternalSource { get; set; }
+    public string? ExternalId { get; set; }
 }
