@@ -141,7 +141,27 @@ public class MediaService : IMediaService
         }
 
         // Live search via external providers (AniList for anime/manga, etc.)
-        var externalResults = await _externalMediaService.SearchAsync(query, mediaType, page, pageSize, ct);
+        // Provider methods swallow outages and return empty pages, so an
+        // empty result also means "externals unavailable" -> serve the local
+        // catalog instead of an empty page.
+        PagedResponseDto<MediaDto>? externalResults = null;
+        try
+        {
+            externalResults = await _externalMediaService.SearchAsync(query, mediaType, page, pageSize, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External search failed for '{Query}'. Falling back to the local catalog.", query);
+        }
+
+        if (externalResults is null || externalResults.Items.Count == 0)
+        {
+            if (externalResults is not null)
+            {
+                _logger.LogWarning("External search returned no items for '{Query}'. Falling back to the local catalog.", query);
+            }
+            return await SearchDatabaseAsync(query, mediaType, page, pageSize, ct);
+        }
 
         // Check if any results already exist in our database so we can include our local MediaId!
         if (externalResults.Items.Count > 0)
@@ -182,16 +202,241 @@ public class MediaService : IMediaService
 
     public async Task<PagedResponseDto<MediaDto>> GetTrendingMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
-        return await _externalMediaService.GetTrendingAsync(mediaType, page, pageSize, ct);
+        try
+        {
+            var trending = await _externalMediaService.GetTrendingAsync(mediaType, page, pageSize, ct);
+            if (trending.Items.Count > 0) return trending;
+            _logger.LogWarning("External trending returned no items. Falling back to the local catalog.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External trending failed. Falling back to the local catalog.");
+        }
+
+        return await GetDatabaseHighlightsAsync(mediaType, page, pageSize, DatabaseHighlightOrder.ByScore, ct);
     }
 
     public async Task<PagedResponseDto<MediaDto>> GetUpcomingMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
-        return await _externalMediaService.GetUpcomingAsync(mediaType, page, pageSize, ct);
+        try
+        {
+            var upcoming = await _externalMediaService.GetUpcomingAsync(mediaType, page, pageSize, ct);
+            if (upcoming.Items.Count > 0) return upcoming;
+            _logger.LogWarning("External upcoming returned no items. Falling back to the local catalog.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External upcoming failed. Falling back to the local catalog.");
+        }
+
+        return await GetDatabaseHighlightsAsync(mediaType, page, pageSize, DatabaseHighlightOrder.ByRecent, ct);
     }
 
     public async Task<PagedResponseDto<MediaDto>> GetTopMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
-        return await _externalMediaService.GetTopAsync(mediaType, page, pageSize, ct);
+        try
+        {
+            var top = await _externalMediaService.GetTopAsync(mediaType, page, pageSize, ct);
+            if (top.Items.Count > 0) return top;
+            _logger.LogWarning("External top chart returned no items. Falling back to the local catalog.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External top chart failed. Falling back to the local catalog.");
+        }
+
+        return await GetDatabaseHighlightsAsync(mediaType, page, pageSize, DatabaseHighlightOrder.ByScore, ct);
+    }
+
+    public async Task<PagedResponseDto<MediaDto>> GetSimilarMediaAsync(
+        string mediaType,
+        string? externalSource = null,
+        string? externalId = null,
+        IEnumerable<string>? genres = null,
+        int pageSize = 10,
+        CancellationToken ct = default)
+    {
+        PagedResponseDto<MediaDto>? externalResults = null;
+        try
+        {
+            externalResults = await _externalMediaService.GetSimilarAsync(
+                mediaType, externalSource, externalId, genres, pageSize, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External similar lookup failed. Falling back to the local catalog.");
+        }
+
+        if (externalResults is not null && externalResults.Items.Count >= Math.Min(4, pageSize))
+        {
+            return externalResults;
+        }
+
+        var databaseItems = await GetSimilarFromDatabaseAsync(mediaType, externalSource, externalId, genres, pageSize, ct);
+        if (databaseItems.Count > 0)
+        {
+            _logger.LogWarning(
+                "Serving {Count} similar titles from the local catalog for {MediaType} {Source}:{ExternalId}.",
+                databaseItems.Count, mediaType, externalSource, externalId);
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = databaseItems,
+                Page = 1,
+                PageSize = pageSize,
+                TotalItems = databaseItems.Count,
+                TotalPages = 1
+            };
+        }
+
+        return externalResults ?? new PagedResponseDto<MediaDto> { Page = 1, PageSize = pageSize };
+    }
+
+    // ---------------------------------------------------------------------
+    // Local-catalog fallbacks (used when external providers are down).
+    // The local catalog only contains titles users have added to a library,
+    // so results are limited — but library, search, discover and similar
+    // keep working instead of returning empty pages.
+    // ---------------------------------------------------------------------
+
+    private enum DatabaseHighlightOrder
+    {
+        ByScore,
+        ByRecent
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> SearchDatabaseAsync(
+        string query, string? mediaType, int page, int pageSize, CancellationToken ct)
+    {
+        var pattern = $"%{EscapeLikePattern(query.Trim())}%";
+        var normalizedType = NormalizeDbMediaType(mediaType);
+
+        var dbQuery = _context.Media
+            .AsNoTracking()
+            .Where(m => EF.Functions.ILike(m.Title, pattern)
+                || (m.OriginalTitle != null && EF.Functions.ILike(m.OriginalTitle, pattern)));
+
+        if (normalizedType is not null)
+        {
+            dbQuery = dbQuery.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        var totalItems = await dbQuery.CountAsync(ct);
+        var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
+
+        var entities = await dbQuery
+            .OrderByDescending(m => m.Score ?? -1)
+            .ThenBy(m => m.Title)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = entities.Select(MediaDto.FromEntity).ToList(),
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = totalItems,
+            TotalPages = totalPages
+        };
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetDatabaseHighlightsAsync(
+        string? mediaType, int page, int pageSize, DatabaseHighlightOrder order, CancellationToken ct)
+    {
+        var normalizedType = NormalizeDbMediaType(mediaType);
+
+        var dbQuery = _context.Media.AsNoTracking().AsQueryable();
+        if (normalizedType is not null)
+        {
+            dbQuery = dbQuery.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        dbQuery = order == DatabaseHighlightOrder.ByRecent
+            ? dbQuery.OrderByDescending(m => m.CreatedAt).ThenBy(m => m.Title)
+            : dbQuery.OrderByDescending(m => m.Score ?? -1).ThenBy(m => m.Title);
+
+        var totalItems = await dbQuery.CountAsync(ct);
+        var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
+
+        var entities = await dbQuery
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = entities.Select(MediaDto.FromEntity).ToList(),
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = totalItems,
+            TotalPages = totalPages
+        };
+    }
+
+    private async Task<List<MediaDto>> GetSimilarFromDatabaseAsync(
+        string mediaType,
+        string? externalSource,
+        string? externalId,
+        IEnumerable<string>? genres,
+        int pageSize,
+        CancellationToken ct)
+    {
+        var normalizedType = NormalizeDbMediaType(mediaType);
+        var genreSet = genres?
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .Select(g => g.Trim().ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(StringComparer.Ordinal);
+
+        var dbQuery = _context.Media.AsNoTracking().AsQueryable();
+        if (normalizedType is not null)
+        {
+            dbQuery = dbQuery.Where(m => m.MediaType.ToLower() == normalizedType);
+        }
+
+        // Genre overlap is ranked in memory (Postgres array overlap over a
+        // denormalized name list does not translate cleanly), so pull a
+        // bounded candidate window ordered by score.
+        var candidates = await dbQuery
+            .OrderByDescending(m => m.Score ?? -1)
+            .Take(100)
+            .ToListAsync(ct);
+
+        return candidates
+            .Where(m => string.IsNullOrWhiteSpace(externalId)
+                || m.ExternalId != externalId
+                || (!string.IsNullOrWhiteSpace(externalSource)
+                    && !m.ExternalSource.Equals(externalSource, StringComparison.OrdinalIgnoreCase)))
+            .Select(m => new
+            {
+                Dto = MediaDto.FromEntity(m),
+                Overlap = genreSet.Count == 0
+                    ? 0
+                    : m.Genres.Count(g => g != null && genreSet.Contains(g.Trim().ToLowerInvariant()))
+            })
+            .Where(x => genreSet.Count == 0 || x.Overlap > 0)
+            .OrderByDescending(x => x.Overlap)
+            .ThenByDescending(x => x.Dto.Score ?? -1)
+            .Take(pageSize)
+            .Select(x => x.Dto)
+            .ToList();
+    }
+
+    private static string? NormalizeDbMediaType(string? mediaType)
+    {
+        if (string.IsNullOrWhiteSpace(mediaType)) return null;
+        return mediaType.Trim().ToLowerInvariant() switch
+        {
+            "tv" or "tvshow" or "tv-show" or "show" or "shows" or "series" => "series",
+            "film" or "films" or "movies" or "movie" => "movie",
+            "games" or "videogame" or "video-game" or "game" => "game",
+            "manga" or "mangas" => "manga",
+            "anime" or "animes" => "anime",
+            var t => t
+        };
+    }
+
+    private static string EscapeLikePattern(string value)
+    {
+        return value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
     }
 }

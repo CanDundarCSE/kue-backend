@@ -175,7 +175,7 @@ public class MediaController : ControllerBase
             return Ok(new PagedResponseDto<MediaDto> { Page = 1, PageSize = pageSize, TotalItems = 0, TotalPages = 0 });
         }
 
-        var similar = await _externalMediaService.GetSimilarAsync(
+        var similar = await _mediaService.GetSimilarMediaAsync(
             media.MediaType,
             media.ExternalSource,
             media.ExternalId,
@@ -269,7 +269,7 @@ public class MediaController : ControllerBase
             genreList.AddRange(genre.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         }
 
-        var similar = await _externalMediaService.GetSimilarAsync(
+        var similar = await _mediaService.GetSimilarMediaAsync(
             type ?? "movie",
             source,
             id,

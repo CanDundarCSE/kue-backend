@@ -1545,9 +1545,17 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         var token = await GetTwitchAccessTokenAsync(ct);
         var clientId = _configuration["Igdb:ClientId"];
 
-        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(clientId))
+        if (string.IsNullOrWhiteSpace(clientId))
         {
             return GetFallbackSampleGame(page, pageSize);
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            // Credentials are configured but Twitch is unreachable: signal an
+            // outage (empty) so callers fall back to the local catalog
+            // instead of serving the dev sample.
+            return EmptyPage(page, pageSize);
         }
 
         var sanitizedQuery = query.Replace("\"", "\\\"");
@@ -1566,9 +1574,17 @@ offset {offset};";
         var token = await GetTwitchAccessTokenAsync(ct);
         var clientId = _configuration["Igdb:ClientId"];
 
-        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(clientId))
+        if (string.IsNullOrWhiteSpace(clientId))
         {
             return GetFallbackSampleGame(1, 1).Items.FirstOrDefault();
+        }
+
+        // Credentials are configured but Twitch is unreachable: report
+        // "not found" so callers fall back to the local catalog instead of
+        // serving the dev sample.
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
         }
 
         var apicalypseQuery = $@"
@@ -1606,9 +1622,17 @@ limit 1;";
         var token = await GetTwitchAccessTokenAsync(ct);
         var clientId = _configuration["Igdb:ClientId"];
 
-        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(clientId))
+        if (string.IsNullOrWhiteSpace(clientId))
         {
             return GetFallbackSampleGame(page, pageSize);
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            // Credentials are configured but Twitch is unreachable: signal an
+            // outage (empty) so callers fall back to the local catalog
+            // instead of serving the dev sample.
+            return EmptyPage(page, pageSize);
         }
 
         var offset = Math.Max(0, (page - 1) * pageSize);

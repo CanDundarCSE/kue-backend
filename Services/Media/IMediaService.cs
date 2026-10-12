@@ -12,4 +12,11 @@ public interface IMediaService
     Task<PagedResponseDto<MediaDto>> GetTrendingMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default);
     Task<PagedResponseDto<MediaDto>> GetUpcomingMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default);
     Task<PagedResponseDto<MediaDto>> GetTopMediaAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default);
+    Task<PagedResponseDto<MediaDto>> GetSimilarMediaAsync(
+        string mediaType,
+        string? externalSource = null,
+        string? externalId = null,
+        IEnumerable<string>? genres = null,
+        int pageSize = 10,
+        CancellationToken ct = default);
 }
