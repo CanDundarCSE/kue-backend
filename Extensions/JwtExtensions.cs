@@ -8,10 +8,19 @@ public static class JwtExtensions
 public static IServiceCollection AddJwtAuthentication(this IServiceCollection services, IConfiguration configuration)
 {
     var jwtKey = configuration["Jwt:Key"];
-    
+
     if (string.IsNullOrEmpty(jwtKey))
     {
         throw new InvalidOperationException("JWT Key is missing in configuration!");
+    }
+
+    // HS256 needs a key of at least 256 bits (32 bytes). A shorter key
+    // silently degrades HMAC strength for every issued token, so fail fast
+    // instead of starting with weak signing. Measured in bytes, not chars:
+    // multibyte characters contribute more than one byte.
+    if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
+    {
+        throw new InvalidOperationException("JWT Key must be at least 32 bytes (256 bits) for HS256 signing!");
     }
 
     services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
