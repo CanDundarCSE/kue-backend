@@ -81,11 +81,28 @@ public class FriendsController : ControllerBase
             return BadRequest(new MessageResponseDto("You cannot send a friend request to yourself."));
         }
 
-        // Check if a relationship already exists in either direction
+        return await SendFriendRequestToUserAsync(targetUser, currentUserId.Value, ct);
+    }
+
+    private static string? NormalizeKueId(string? kueId)
+    {
+        if (string.IsNullOrWhiteSpace(kueId)) return null;
+        var normalized = kueId.Trim().ToUpperInvariant();
+        if (normalized.StartsWith("KUE-", StringComparison.Ordinal))
+        {
+            normalized = normalized["KUE-".Length..];
+        }
+        if (normalized.Length == 0) return null;
+        return $"KUE-{normalized}";
+    }
+
+    private async Task<IActionResult> SendFriendRequestToUserAsync(
+        User targetUser, int currentUserId, CancellationToken ct)
+    {
         var existing = await _context.Friendships
             .FirstOrDefaultAsync(f =>
-                (f.RequesterId == currentUserId.Value && f.AddresseeId == targetUser.Id) ||
-                (f.RequesterId == targetUser.Id && f.AddresseeId == currentUserId.Value), ct);
+                (f.RequesterId == currentUserId && f.AddresseeId == targetUser.Id) ||
+                (f.RequesterId == targetUser.Id && f.AddresseeId == currentUserId), ct);
 
         if (existing != null)
         {
@@ -94,7 +111,7 @@ public class FriendsController : ControllerBase
                 return BadRequest(new MessageResponseDto($"You are already friends with '{targetUser.Username}'."));
             }
 
-            if (existing.RequesterId == currentUserId.Value && existing.Status == "pending")
+            if (existing.RequesterId == currentUserId && existing.Status == "pending")
             {
                 return BadRequest(new MessageResponseDto("Friend request has already been sent and is pending."));
             }
@@ -106,10 +123,10 @@ public class FriendsController : ControllerBase
                 existing.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync(ct);
 
-                var senderUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+                var senderUser = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId, ct);
                 await _notificationService.CreateNotificationAsync(
                     userId: targetUser.Id,
-                    actorId: currentUserId.Value,
+                    actorId: currentUserId,
                     type: "friend_request_accepted",
                     title: "Arkadaşlık İsteği Kabul Edildi",
                     message: $"{senderUser?.Username ?? "Bir kullanıcı"} ile artık karşılıklı arkadaşsınız!",
@@ -121,17 +138,17 @@ public class FriendsController : ControllerBase
             }
 
             // If previously declined or cancelled, re-open as pending
-            existing.RequesterId = currentUserId.Value;
+            existing.RequesterId = currentUserId;
             existing.AddresseeId = targetUser.Id;
             existing.Status = "pending";
             existing.CreatedAt = DateTime.UtcNow;
             existing.UpdatedAt = null;
             await _context.SaveChangesAsync(ct);
 
-            var retrySender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+            var retrySender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId, ct);
             await _notificationService.CreateNotificationAsync(
                 userId: targetUser.Id,
-                actorId: currentUserId.Value,
+                actorId: currentUserId,
                 type: "friend_request_received",
                 title: "Yeni Arkadaşlık İsteği",
                 message: $"{retrySender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
@@ -144,7 +161,7 @@ public class FriendsController : ControllerBase
 
         var friendship = new Friendship
         {
-            RequesterId = currentUserId.Value,
+            RequesterId = currentUserId,
             AddresseeId = targetUser.Id,
             Status = "pending",
             CreatedAt = DateTime.UtcNow
@@ -153,10 +170,10 @@ public class FriendsController : ControllerBase
         _context.Friendships.Add(friendship);
         await _context.SaveChangesAsync(ct);
 
-        var freshSender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
+        var freshSender = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == currentUserId, ct);
         await _notificationService.CreateNotificationAsync(
             userId: targetUser.Id,
-            actorId: currentUserId.Value,
+            actorId: currentUserId,
             type: "friend_request_received",
             title: "Yeni Arkadaşlık İsteği",
             message: $"{freshSender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
@@ -220,11 +237,49 @@ public class FriendsController : ControllerBase
             FriendshipId = request.Id,
             UserId = request.Requester.Id,
             Username = request.Requester.Username,
+            KueId = request.Requester.KueId,
             Bio = request.Requester.Bio,
             FriendsSince = request.UpdatedAt ?? request.CreatedAt
         };
 
         return Ok(dto);
+    }
+
+    /// <summary>
+    /// Send a friend request to a user by Kue ID (e.g. "KUE-7X2P9Q", prefix optional).
+    /// Shares the exact flow of the username variant below.
+    /// </summary>
+    [HttpPost("request/by-kueid/{kueId}")]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> SendFriendRequestByKueId(string kueId, CancellationToken ct)
+    {
+        var currentUserId = GetCurrentUserId();
+        if (currentUserId is null) return Unauthorized();
+
+        var normalizedKueId = NormalizeKueId(kueId);
+        if (normalizedKueId is null)
+        {
+            return BadRequest(new MessageResponseDto("Invalid Kue ID."));
+        }
+
+        var targetUser = await _context.Users
+            .FirstOrDefaultAsync(u => u.KueId == normalizedKueId, ct);
+
+        if (targetUser is null)
+        {
+            return NotFound(new MessageResponseDto($"User with Kue ID '{kueId.Trim()}' was not found."));
+        }
+
+        if (targetUser.Id == currentUserId.Value)
+        {
+            return BadRequest(new MessageResponseDto("You cannot send a friend request to yourself."));
+        }
+
+        return await SendFriendRequestToUserAsync(targetUser, currentUserId.Value, ct);
     }
 
     /// <summary>
@@ -324,6 +379,7 @@ public class FriendsController : ControllerBase
                 FriendshipId = f.Id,
                 UserId = friendUser.Id,
                 Username = friendUser.Username,
+                KueId = friendUser.KueId,
                 Bio = friendUser.Bio,
                 FriendsSince = f.UpdatedAt ?? f.CreatedAt
             };
@@ -356,9 +412,11 @@ public class FriendsController : ControllerBase
                 Id = f.Id,
                 RequesterId = f.RequesterId,
                 RequesterUsername = f.Requester.Username,
+                RequesterKueId = f.Requester.KueId,
                 RequesterBio = f.Requester.Bio,
                 AddresseeId = f.AddresseeId,
                 AddresseeUsername = f.Addressee.Username,
+                AddresseeKueId = f.Addressee.KueId,
                 Status = f.Status,
                 CreatedAt = f.CreatedAt
             })
@@ -389,9 +447,11 @@ public class FriendsController : ControllerBase
                 Id = f.Id,
                 RequesterId = f.RequesterId,
                 RequesterUsername = f.Requester.Username,
+                RequesterKueId = f.Requester.KueId,
                 RequesterBio = f.Requester.Bio,
                 AddresseeId = f.AddresseeId,
                 AddresseeUsername = f.Addressee.Username,
+                AddresseeKueId = f.Addressee.KueId,
                 Status = f.Status,
                 CreatedAt = f.CreatedAt
             })
@@ -455,6 +515,7 @@ public class FriendsController : ControllerBase
                 FriendshipId = f.Id,
                 UserId = friendUser.Id,
                 Username = friendUser.Username,
+                KueId = friendUser.KueId,
                 Bio = friendUser.Bio,
                 FriendsSince = f.UpdatedAt ?? f.CreatedAt
             };

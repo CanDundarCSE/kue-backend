@@ -53,6 +53,51 @@ public class UsersController : ControllerBase
         }
 
         var currentUserId = GetCurrentUserId();
+        return Ok(await BuildProfileDtoAsync(user, currentUserId, ct));
+    }
+
+    /// <summary>
+    /// Get public profile of a user by Kue ID (e.g. "KUE-7X2P9Q", prefix optional).
+    /// </summary>
+    [HttpGet("by-kueid/{kueId}")]
+    [ProducesResponseType(typeof(PublicUserProfileDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetUserProfileByKueId(string kueId, CancellationToken ct)
+    {
+        var normalizedKueId = NormalizeKueId(kueId);
+        if (normalizedKueId is null)
+        {
+            return NotFound(new MessageResponseDto($"User with Kue ID '{kueId.Trim()}' was not found."));
+        }
+
+        var user = await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.KueId == normalizedKueId, ct);
+
+        if (user is null)
+        {
+            return NotFound(new MessageResponseDto($"User with Kue ID '{kueId.Trim()}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        return Ok(await BuildProfileDtoAsync(user, currentUserId, ct));
+    }
+
+    private static string? NormalizeKueId(string? kueId)
+    {
+        if (string.IsNullOrWhiteSpace(kueId)) return null;
+        var normalized = kueId.Trim().ToUpperInvariant();
+        if (normalized.StartsWith("KUE-", StringComparison.Ordinal))
+        {
+            normalized = normalized["KUE-".Length..];
+        }
+        if (normalized.Length == 0) return null;
+        return $"KUE-{normalized}";
+    }
+
+    private async Task<PublicUserProfileDto> BuildProfileDtoAsync(
+        Kue.Api.Entities.User user, int? currentUserId, CancellationToken ct)
+    {
         var (isSelf, isMutualFriend, friendshipStatus) = await GetRelationshipAsync(currentUserId, user.Id, ct);
 
         var dto = new PublicUserProfileDto
@@ -71,7 +116,7 @@ public class UsersController : ControllerBase
         if (user.IsPrivate && !isSelf && !isMutualFriend)
         {
             dto.Counts = null;
-            return Ok(dto);
+            return dto;
         }
 
         var libraryQuery = _context.LibraryEntries.Where(e => e.UserId == user.Id);
@@ -101,7 +146,7 @@ public class UsersController : ControllerBase
             RatingsCount = ratingsCount
         };
 
-        return Ok(dto);
+        return dto;
     }
 
     /// <summary>

@@ -5,6 +5,7 @@ public class FriendDto
     public int FriendshipId { get; set; }
     public int UserId { get; set; }
     public string Username { get; set; } = null!;
+    public string? KueId { get; set; }
     public string? Bio { get; set; }
     public DateTime FriendsSince { get; set; }
 }
