@@ -105,6 +105,21 @@ public class MeController : ControllerBase
             user.Bio = string.IsNullOrWhiteSpace(request.Bio) ? null : request.Bio.Trim();
         }
 
+        if (!string.IsNullOrWhiteSpace(request.Email))
+        {
+            var email = request.Email.Trim();
+            if (email != user.Email)
+            {
+                var emailTaken = await _context.Users.AnyAsync(
+                    u => u.Email == email && u.Id != user.Id, ct);
+                if (emailTaken)
+                {
+                    return BadRequest(new MessageResponseDto("Email is already taken."));
+                }
+                user.Email = email;
+            }
+        }
+
         if (request.IsPrivate.HasValue)
         {
             user.IsPrivate = request.IsPrivate.Value;
@@ -116,8 +131,8 @@ public class MeController : ControllerBase
         }
         catch (DbUpdateException)
         {
-            // Concurrent registration/change won the unique lower() index race.
-            return BadRequest(new MessageResponseDto("Username is already taken."));
+            // Concurrent registration/change won a unique index race.
+            return BadRequest(new MessageResponseDto("Username or email is already taken."));
         }
 
         return Ok(new UserProfileDto
