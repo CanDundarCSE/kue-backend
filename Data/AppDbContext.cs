@@ -29,6 +29,8 @@ public class AppDbContext : DbContext
             entity.HasIndex(u => u.Username).IsUnique();
             entity.Property(u => u.Email).HasMaxLength(256).IsRequired();
             entity.Property(u => u.Username).HasMaxLength(50).IsRequired();
+            entity.Property(u => u.KueId).HasMaxLength(20);
+            entity.HasIndex(u => u.KueId).IsUnique();
             entity.Property(u => u.Bio).HasMaxLength(500);
             entity.Property(u => u.IsPrivate).HasDefaultValue(false);
             entity.Property(u => u.IsBanned).HasDefaultValue(false);

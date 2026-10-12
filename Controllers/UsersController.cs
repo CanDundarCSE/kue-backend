@@ -59,6 +59,7 @@ public class UsersController : ControllerBase
         {
             Id = user.Id,
             Username = user.Username,
+            KueId = user.KueId,
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             IsFriend = isMutualFriend,

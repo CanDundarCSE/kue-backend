@@ -15,6 +15,7 @@ public record AuthUserDto
     public int Id { get; init; }
     public string Username { get; init; } = null!;
     public string Email { get; init; } = null!;
+    public string? KueId { get; init; }
     public string? Bio { get; init; }
     public IReadOnlyList<string> Roles { get; init; } = [];
 }

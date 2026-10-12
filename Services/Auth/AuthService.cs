@@ -53,8 +53,19 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
-        // 1. Check if user already exists (generic message to prevent user enumeration)
-        if (await _context.Users.AnyAsync(u => u.Email == request.Email || u.Username == request.Username, cancellationToken))
+        var username = request.Username.Trim();
+        if (username.Length < 3)
+        {
+            throw new InvalidOperationException("Username must be between 3 and 50 characters.");
+        }
+
+        // 1. Check if user already exists (generic message to prevent user enumeration).
+        // Username comparison is case-insensitive so "Alice" and "alice" can't
+        // both exist; the unique lower() index below race-proofs this check.
+        var normalizedUsername = username.ToLowerInvariant();
+        if (await _context.Users.AnyAsync(
+            u => u.Email == request.Email || u.Username.ToLower() == normalizedUsername,
+            cancellationToken))
         {
             throw new InvalidOperationException("Registration failed. Please try a different email or username.");
         }
@@ -62,8 +73,9 @@ public class AuthService : IAuthService
         // 2. Create new user
         var user = new User
         {
-            Username = request.Username,
+            Username = username,
             Email = request.Email,
+            KueId = await GenerateUniqueKueIdAsync(cancellationToken),
             PasswordHash = _passwordHasher.HashPassword(null!, request.Password),
             CreatedAt = DateTime.UtcNow
         };
@@ -114,6 +126,9 @@ public class AuthService : IAuthService
         {
             _context.RefreshTokens.RemoveRange(obsoleteTokens);
         }
+
+        // Backfill the public handle for rows predating the feature.
+        await EnsureKueIdAsync(user, cancellationToken);
 
         // 4. Prepare response DTO & save refresh token to DB
         var userDto = MapToUserDto(user);
@@ -558,6 +573,7 @@ public class AuthService : IAuthService
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
+            KueId = user.KueId,
             Bio = user.Bio,
             Roles = user.Roles ?? new List<string> { "User" }
         };
@@ -569,6 +585,42 @@ public class AuthService : IAuthService
         using var rng = RandomNumberGenerator.Create();
         rng.GetBytes(randomBytes);
         return Convert.ToBase64String(randomBytes);
+    }
+
+    // Unambiguous alphabet (no 0/O, 1/I/L) for the public KUE-XXXXXX handle.
+    private const string KueIdAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    private const int KueIdCodeLength = 6;
+
+    private static string GenerateKueId()
+    {
+        var code = new char[KueIdCodeLength];
+        for (var i = 0; i < code.Length; i++)
+        {
+            code[i] = KueIdAlphabet[RandomNumberGenerator.GetInt32(KueIdAlphabet.Length)];
+        }
+        return $"KUE-{new string(code)}";
+    }
+
+    private async Task<string> GenerateUniqueKueIdAsync(CancellationToken ct)
+    {
+        // 32^6 combinations: a collision is practically impossible, but retry
+        // against the unique index instead of assuming.
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var candidate = GenerateKueId();
+            if (!await _context.Users.AnyAsync(u => u.KueId == candidate, ct))
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException("Could not assign a unique Kue ID. Please try again.");
+    }
+
+    private async Task EnsureKueIdAsync(User user, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(user.KueId)) return;
+        user.KueId = await GenerateUniqueKueIdAsync(ct);
     }
 
     /// <summary>

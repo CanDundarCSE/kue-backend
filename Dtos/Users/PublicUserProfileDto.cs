@@ -4,6 +4,7 @@ public class PublicUserProfileDto
 {
     public int Id { get; set; }
     public string Username { get; set; } = null!;
+    public string? KueId { get; set; }
     public string? Bio { get; set; }
     public bool IsPrivate { get; set; }
     public bool IsFriend { get; set; }

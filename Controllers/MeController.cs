@@ -49,6 +49,7 @@ public class MeController : ControllerBase
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
+            KueId = user.KueId,
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,
@@ -75,14 +76,28 @@ public class MeController : ControllerBase
             return NotFound(new MessageResponseDto("User not found."));
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Username) && request.Username != user.Username)
+        if (!string.IsNullOrWhiteSpace(request.Username))
         {
-            var isTaken = await _context.Users.AnyAsync(u => u.Username == request.Username && u.Id != user.Id, ct);
-            if (isTaken)
+            var username = request.Username.Trim();
+            if (username.Length < 3)
             {
-                return BadRequest(new MessageResponseDto("Username is already taken."));
+                return BadRequest(new MessageResponseDto("Username must be between 3 and 50 characters."));
             }
-            user.Username = request.Username.Trim();
+
+            if (username != user.Username)
+            {
+                // Case-insensitive so "Alice" and "alice" can't coexist; the
+                // unique lower() index race-proofs this check (see the
+                // DbUpdateException handler below).
+                var normalizedUsername = username.ToLowerInvariant();
+                var isTaken = await _context.Users.AnyAsync(
+                    u => u.Username.ToLower() == normalizedUsername && u.Id != user.Id, ct);
+                if (isTaken)
+                {
+                    return BadRequest(new MessageResponseDto("Username is already taken."));
+                }
+                user.Username = username;
+            }
         }
 
         if (request.Bio is not null)
@@ -95,13 +110,22 @@ public class MeController : ControllerBase
             user.IsPrivate = request.IsPrivate.Value;
         }
 
-        await _context.SaveChangesAsync(ct);
+        try
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Concurrent registration/change won the unique lower() index race.
+            return BadRequest(new MessageResponseDto("Username is already taken."));
+        }
 
         return Ok(new UserProfileDto
         {
             Id = user.Id,
             Username = user.Username,
             Email = user.Email,
+            KueId = user.KueId,
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,

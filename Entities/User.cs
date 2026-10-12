@@ -5,6 +5,13 @@ public class User
     public int Id { get; set; }
     public string Username { get; set; } = null!;
     public string Email { get; set; } = null!;
+
+    /// <summary>
+    /// Public shareable handle (e.g. "KUE-7X2P9Q") used to find accounts.
+    /// Nullable only for rows predating the feature; always assigned for new
+    /// registrations and backfilled on login.
+    /// </summary>
+    public string? KueId { get; set; }
     public string PasswordHash { get; set; } = null!;
     public string? Bio { get; set; }
     public bool IsPrivate { get; set; } = false;
