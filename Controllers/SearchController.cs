@@ -23,6 +23,9 @@ public class SearchController : ControllerBase
         [FromQuery] string? type,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
+        [FromQuery] string? sort = null,
+        [FromQuery] int? year = null,
+        [FromQuery] double? minScore = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -37,7 +40,15 @@ public class SearchController : ControllerBase
             });
         }
 
-        var results = await _mediaService.SearchMediaAsync(query, type, page, pageSize, ct);
+        var normalizedSort = sort?.Trim().ToLowerInvariant() switch
+        {
+            "newest" or "oldest" or "highest" or "lowest" => sort!.Trim().ToLowerInvariant(),
+            _ => null,
+        };
+        var normalizedYear = year is >= 1800 and <= 2100 ? year : null;
+        var normalizedMinScore = minScore is >= 0 and <= 10 ? minScore : null;
+
+        var results = await _mediaService.SearchMediaAsync(query, type, page, pageSize, normalizedSort, normalizedYear, normalizedMinScore, ct);
         return Ok(results);
     }
 }

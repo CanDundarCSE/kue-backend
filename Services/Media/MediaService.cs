@@ -133,7 +133,7 @@ public class MediaService : IMediaService
         throw new InvalidOperationException("You must provide either MediaId or both ExternalSource and ExternalId.");
     }
 
-    public async Task<PagedResponseDto<MediaDto>> SearchMediaAsync(string query, string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    public async Task<PagedResponseDto<MediaDto>> SearchMediaAsync(string query, string? mediaType = null, int page = 1, int pageSize = 20, string? sort = null, int? year = null, double? minScore = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -147,7 +147,7 @@ public class MediaService : IMediaService
         PagedResponseDto<MediaDto>? externalResults = null;
         try
         {
-            externalResults = await _externalMediaService.SearchAsync(query, mediaType, page, pageSize, ct);
+            externalResults = await _externalMediaService.SearchAsync(query, mediaType, page, pageSize, sort, year, minScore, ct);
         }
         catch (Exception ex)
         {
@@ -160,7 +160,7 @@ public class MediaService : IMediaService
             {
                 _logger.LogWarning("External search returned no items for '{Query}'. Falling back to the local catalog.", query);
             }
-            return await SearchDatabaseAsync(query, mediaType, page, pageSize, ct);
+            return await SearchDatabaseAsync(query, mediaType, page, pageSize, sort, year, minScore, ct);
         }
 
         // Check if any results already exist in our database so we can include our local MediaId!
@@ -305,7 +305,7 @@ public class MediaService : IMediaService
     }
 
     private async Task<PagedResponseDto<MediaDto>> SearchDatabaseAsync(
-        string query, string? mediaType, int page, int pageSize, CancellationToken ct)
+        string query, string? mediaType, int page, int pageSize, string? sort, int? year, double? minScore, CancellationToken ct)
     {
         var pattern = $"%{EscapeLikePattern(query.Trim())}%";
         var normalizedType = NormalizeDbMediaType(mediaType);
@@ -320,12 +320,30 @@ public class MediaService : IMediaService
             dbQuery = dbQuery.Where(m => m.MediaType.ToLower() == normalizedType);
         }
 
+        if (year.HasValue)
+        {
+            dbQuery = dbQuery.Where(m => m.Year == year.Value);
+        }
+
+        if (minScore.HasValue)
+        {
+            dbQuery = dbQuery.Where(m => m.Score != null && m.Score >= minScore.Value);
+        }
+
         var totalItems = await dbQuery.CountAsync(ct);
         var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
 
+        var normalizedSort = sort?.Trim().ToLowerInvariant();
+        dbQuery = normalizedSort switch
+        {
+            "newest" => dbQuery.OrderByDescending(m => m.Year ?? -1).ThenBy(m => m.Title),
+            "oldest" => dbQuery.OrderBy(m => m.Year ?? 9999).ThenBy(m => m.Title),
+            "highest" => dbQuery.OrderByDescending(m => m.Score ?? -1).ThenBy(m => m.Title),
+            "lowest" => dbQuery.OrderBy(m => m.Score ?? 11).ThenBy(m => m.Title),
+            _ => dbQuery.OrderByDescending(m => m.Score ?? -1).ThenBy(m => m.Title),
+        };
+
         var entities = await dbQuery
-            .OrderByDescending(m => m.Score ?? -1)
-            .ThenBy(m => m.Title)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct);

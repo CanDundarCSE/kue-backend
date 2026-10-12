@@ -25,32 +25,33 @@ public class ExternalMediaService : IExternalMediaService
         _logger = logger;
     }
 
-    public async Task<PagedResponseDto<MediaDto>> SearchAsync(string query, string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)
+    public async Task<PagedResponseDto<MediaDto>> SearchAsync(string query, string? mediaType = null, int page = 1, int pageSize = 20, string? sort = null, int? year = null, double? minScore = null, CancellationToken ct = default)
     {
         var normalizedType = NormalizeMediaType(mediaType);
+        var normalizedSort = NormalizeSearchSort(sort);
 
         if (normalizedType is "anime" or "manga")
         {
-            return await SearchAniListAsync(query, normalizedType, page, pageSize, ct);
+            return await SearchAniListAsync(query, normalizedType, page, pageSize, normalizedSort, year, minScore, ct);
         }
 
         if (normalizedType is "movie" or "series")
         {
-            return await SearchTmdbAsync(query, normalizedType, page, pageSize, ct);
+            return await SearchTmdbAsync(query, normalizedType, page, pageSize, normalizedSort, year, minScore, ct);
         }
 
         if (normalizedType is "game")
         {
-            return await SearchIgdbAsync(query, page, pageSize, ct);
+            return await SearchIgdbAsync(query, page, pageSize, normalizedSort, year, minScore, ct);
         }
 
         // ---------------------------------------------------------------------
         // Unified Multi-Search (Movies, TV Series, Games, Anime & Manga in parallel)
         // ---------------------------------------------------------------------
-        var tmdbTask = SearchTmdbAsync(query, "multi", 1, pageSize, ct);
-        var igdbTask = SearchIgdbAsync(query, 1, pageSize, ct);
-        var animeTask = SearchAniListAsync(query, "anime", 1, Math.Min(10, pageSize), ct);
-        var mangaTask = SearchAniListAsync(query, "manga", 1, Math.Min(5, pageSize), ct);
+        var tmdbTask = SearchTmdbAsync(query, "multi", 1, pageSize, normalizedSort, year, minScore, ct);
+        var igdbTask = SearchIgdbAsync(query, 1, pageSize, normalizedSort, year, minScore, ct);
+        var animeTask = SearchAniListAsync(query, "anime", 1, Math.Min(10, pageSize), normalizedSort, year, minScore, ct);
+        var mangaTask = SearchAniListAsync(query, "manga", 1, Math.Min(5, pageSize), normalizedSort, year, minScore, ct);
 
         await Task.WhenAll(tmdbTask, igdbTask, animeTask, mangaTask);
 
@@ -59,16 +60,29 @@ public class ExternalMediaService : IExternalMediaService
         var animeItems = (await animeTask).Items;
         var mangaItems = (await mangaTask).Items;
 
-        // Interleave results so games, series, movies and anime are evenly represented
         var combinedItems = new List<MediaDto>();
-        var maxCount = Math.Max(Math.Max(tmdbItems.Count, igdbItems.Count), Math.Max(animeItems.Count, mangaItems.Count));
-
-        for (int i = 0; i < maxCount; i++)
+        if (normalizedSort is not null)
         {
-            if (i < igdbItems.Count) combinedItems.Add(igdbItems[i]);
-            if (i < tmdbItems.Count) combinedItems.Add(tmdbItems[i]);
-            if (i < animeItems.Count) combinedItems.Add(animeItems[i]);
-            if (i < mangaItems.Count) combinedItems.Add(mangaItems[i]);
+            // An explicit sort replaces the even-representation interleave:
+            // every provider already sorted (or filtered) its own leg.
+            combinedItems.AddRange(igdbItems);
+            combinedItems.AddRange(tmdbItems);
+            combinedItems.AddRange(animeItems);
+            combinedItems.AddRange(mangaItems);
+            combinedItems = SortMediaDtos(combinedItems, normalizedSort);
+        }
+        else
+        {
+            // Interleave results so games, series, movies and anime are evenly represented
+            var maxCount = Math.Max(Math.Max(tmdbItems.Count, igdbItems.Count), Math.Max(animeItems.Count, mangaItems.Count));
+
+            for (int i = 0; i < maxCount; i++)
+            {
+                if (i < igdbItems.Count) combinedItems.Add(igdbItems[i]);
+                if (i < tmdbItems.Count) combinedItems.Add(tmdbItems[i]);
+                if (i < animeItems.Count) combinedItems.Add(animeItems[i]);
+                if (i < mangaItems.Count) combinedItems.Add(mangaItems[i]);
+            }
         }
 
         var pagedItems = combinedItems
@@ -712,16 +726,64 @@ query ($id: Int, $type: MediaType, $perPage: Int) {
         };
     }
 
+    /// <summary>
+    /// Canonical search sort keys. Null means provider-default relevance order.
+    /// </summary>
+    private static string? NormalizeSearchSort(string? sort)
+    {
+        return sort?.Trim().ToLowerInvariant() switch
+        {
+            "newest" => "year_desc",
+            "oldest" => "year_asc",
+            "highest" => "rating_desc",
+            "lowest" => "rating_asc",
+            "rating_desc" or "rating_asc" or "year_desc" or "year_asc" => sort.Trim().ToLowerInvariant(),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// In-memory sort for merged legs (multi-search) and providers without a
+    /// native sort (TMDb search). Null keys always sort last.
+    /// </summary>
+    private static List<MediaDto> SortMediaDtos(List<MediaDto> items, string sort)
+    {
+        return sort switch
+        {
+            "rating_desc" => items.OrderByDescending(m => m.Score ?? -1).ThenBy(m => m.Title).ToList(),
+            "rating_asc" => items.OrderBy(m => m.Score ?? 11).ThenBy(m => m.Title).ToList(),
+            "year_desc" => items.OrderByDescending(m => m.Year ?? -1).ThenBy(m => m.Title).ToList(),
+            "year_asc" => items.OrderBy(m => m.Year ?? 9999).ThenBy(m => m.Title).ToList(),
+            _ => items,
+        };
+    }
+
+    private static bool MatchesSearchFilters(MediaDto item, int? year, double? minScore)
+    {
+        if (year.HasValue && item.Year != year.Value) return false;
+        if (minScore.HasValue && (item.Score is null || item.Score.Value < minScore.Value)) return false;
+        return true;
+    }
+
     // -------------------------------------------------------------------------
     // AniList GraphQL Implementation (100% Free, No API key required)
     // -------------------------------------------------------------------------
 
-    private async Task<PagedResponseDto<MediaDto>> SearchAniListAsync(string query, string type, int page, int pageSize, CancellationToken ct)
+    private async Task<PagedResponseDto<MediaDto>> SearchAniListAsync(string query, string type, int page, int pageSize, string? sort, int? year, double? minScore, CancellationToken ct)
     {
         var anilistType = type.Equals("manga", StringComparison.OrdinalIgnoreCase) ? "MANGA" : "ANIME";
 
+        var anilistSort = sort switch
+        {
+            "rating_desc" => "SCORE_DESC",
+            "rating_asc" => "SCORE_ASC",
+            "year_desc" => "START_DATE_DESC",
+            "year_asc" => "START_DATE_ASC",
+            _ => "POPULARITY_DESC",
+        };
+
         const string graphqlQuery = @"
-query ($search: String, $type: MediaType, $page: Int, $perPage: Int) {
+query ($search: String, $type: MediaType, $page: Int, $perPage: Int, $sort: [MediaSort], $startGreater: FuzzyDateInt, $startLesser: FuzzyDateInt, $averageGreater: Int) {
   Page(page: $page, perPage: $perPage) {
     pageInfo {
       total
@@ -730,7 +792,7 @@ query ($search: String, $type: MediaType, $page: Int, $perPage: Int) {
       hasNextPage
       perPage
     }
-    media(search: $search, type: $type, sort: POPULARITY_DESC) {
+    media(search: $search, type: $type, sort: $sort, startDate_greater: $startGreater, startDate_lesser: $startLesser, averageScore_greater: $averageGreater) {
       id
       type
       title {
@@ -756,16 +818,30 @@ query ($search: String, $type: MediaType, $page: Int, $perPage: Int) {
   }
 }";
 
+        // Null-valued filters must be omitted, not sent as null: AniList
+        // rejects explicit nulls with "Illegal operator and value combination".
+        var variables = new Dictionary<string, object?>
+        {
+            ["search"] = query,
+            ["type"] = anilistType,
+            ["page"] = page,
+            ["perPage"] = pageSize,
+            ["sort"] = new[] { anilistSort },
+        };
+        if (year.HasValue)
+        {
+            variables["startGreater"] = year.Value * 10000;
+            variables["startLesser"] = (year.Value + 1) * 10000;
+        }
+        if (minScore.HasValue)
+        {
+            variables["averageGreater"] = Math.Max(0, (int)Math.Floor(minScore.Value * 10) - 1);
+        }
+
         var requestBody = new
         {
             query = graphqlQuery,
-            variables = new
-            {
-                search = query,
-                type = anilistType,
-                page,
-                perPage = pageSize
-            }
+            variables
         };
 
         try
@@ -1064,30 +1140,81 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         return request;
     }
 
-    private async Task<PagedResponseDto<MediaDto>> SearchTmdbAsync(string query, string type, int page, int pageSize, CancellationToken ct)
+    private async Task<PagedResponseDto<MediaDto>> SearchTmdbAsync(string query, string type, int page, int pageSize, string? sort, int? year, double? minScore, CancellationToken ct)
     {
         var normalizedType = type?.Trim().ToLowerInvariant() ?? "multi";
         var isTv = normalizedType is "series" or "tv";
         var isMovie = normalizedType is "movie";
 
+        // TMDb search has no native sort/filter, so those are applied to the
+        // mapped results below. The default path fetches exactly one page,
+        // unchanged from before.
+        if (sort is null && !year.HasValue && !minScore.HasValue)
+        {
+            var single = await FetchTmdbSearchPageAsync(query, normalizedType, isTv, isMovie, page, ct);
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = single.Items,
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = single.TotalResults,
+                TotalPages = single.TotalPages
+            };
+        }
+
+        // Filtered/sorted path: scan provider pages into a pool (capped so one
+        // search can't fan out unboundedly), then filter, sort and slice.
+        // Totals describe the scanned pool.
+        var pool = new List<MediaDto>();
+        var tmdbPage = 1;
+        var lastPage = int.MaxValue;
+        while (pool.Count < page * pageSize && tmdbPage <= Math.Min(lastPage, 5))
+        {
+            var fetched = await FetchTmdbSearchPageAsync(query, normalizedType, isTv, isMovie, tmdbPage, ct);
+            lastPage = Math.Max(1, fetched.TotalPages);
+            pool.AddRange(fetched.Items.Where(item => MatchesSearchFilters(item, year, minScore)));
+            if (fetched.Items.Count == 0) break;
+            tmdbPage++;
+        }
+
+        if (sort is not null)
+        {
+            pool = SortMediaDtos(pool, sort);
+        }
+
+        var pageItems = pool.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = pageItems,
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = pool.Count,
+            TotalPages = Math.Max(1, (int)Math.Ceiling(pool.Count / (double)pageSize))
+        };
+    }
+
+    private async Task<(List<MediaDto> Items, int TotalResults, int TotalPages)> FetchTmdbSearchPageAsync(
+        string query, string normalizedType, bool isTv, bool isMovie, int tmdbPage, CancellationToken ct)
+    {
         string endpoint;
         if (isMovie)
         {
-            endpoint = $"/search/movie?query={Uri.EscapeDataString(query)}&page={page}&include_adult=false";
+            endpoint = $"/search/movie?query={Uri.EscapeDataString(query)}&page={tmdbPage}&include_adult=false";
         }
         else if (isTv)
         {
-            endpoint = $"/search/tv?query={Uri.EscapeDataString(query)}&page={page}&include_adult=false";
+            endpoint = $"/search/tv?query={Uri.EscapeDataString(query)}&page={tmdbPage}&include_adult=false";
         }
         else
         {
-            endpoint = $"/search/multi?query={Uri.EscapeDataString(query)}&page={page}&include_adult=false";
+            endpoint = $"/search/multi?query={Uri.EscapeDataString(query)}&page={tmdbPage}&include_adult=false";
         }
 
         using var request = CreateTmdbRequest(HttpMethod.Get, endpoint);
         if (request == null)
         {
-            return GetFallbackSampleTmdb(isTv ? "series" : "movie", page, pageSize);
+            var fallback = GetFallbackSampleTmdb(isTv ? "series" : "movie", tmdbPage, 20);
+            return (fallback.Items, fallback.TotalItems, fallback.TotalPages);
         }
 
         try
@@ -1097,7 +1224,7 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
             {
                 var err = await response.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning("TMDb API returned status {Status}: {Error}", response.StatusCode, err);
-                return EmptyPage(page, pageSize);
+                return ([], 0, 1);
             }
 
             var json = await response.Content.ReadAsStringAsync(ct);
@@ -1106,7 +1233,7 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
 
             if (!root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
             {
-                return EmptyPage(page, pageSize);
+                return ([], 0, 1);
             }
 
             var items = new List<MediaDto>();
@@ -1124,19 +1251,12 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
             var totalResults = root.TryGetProperty("total_results", out var tr) ? tr.GetInt32() : items.Count;
             var totalPages = root.TryGetProperty("total_pages", out var tp) ? tp.GetInt32() : 1;
 
-            return new PagedResponseDto<MediaDto>
-            {
-                Items = items,
-                Page = page,
-                PageSize = pageSize,
-                TotalItems = totalResults,
-                TotalPages = totalPages
-            };
+            return (items, totalResults, totalPages);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error searching TMDb API");
-            return EmptyPage(page, pageSize);
+            return ([], 0, 1);
         }
     }
 
@@ -1540,7 +1660,7 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         return null;
     }
 
-    private async Task<PagedResponseDto<MediaDto>> SearchIgdbAsync(string query, int page, int pageSize, CancellationToken ct)
+    private async Task<PagedResponseDto<MediaDto>> SearchIgdbAsync(string query, int page, int pageSize, string? sort, int? year, double? minScore, CancellationToken ct)
     {
         var token = await GetTwitchAccessTokenAsync(ct);
         var clientId = _configuration["Igdb:ClientId"];
@@ -1559,14 +1679,62 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         }
 
         var sanitizedQuery = query.Replace("\"", "\\\"");
-        var offset = Math.Max(0, (page - 1) * pageSize);
-        var apicalypseQuery = $@"
+
+        var clauses = new List<string>();
+        if (minScore.HasValue)
+        {
+            clauses.Add($"total_rating >= {minScore.Value * 10:0.##}");
+        }
+        if (year.HasValue)
+        {
+            var from = new DateTimeOffset(year.Value, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+            var to = new DateTimeOffset(year.Value + 1, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+            clauses.Add($"first_release_date >= {from} & first_release_date < {to}");
+        }
+
+        // No where clause unless filtering: the default path must stay
+        // byte-identical to the old relevance search.
+        var whereClause = clauses.Count > 0 ? $"where {string.Join(" & ", clauses)};" : string.Empty;
+
+        // IGDB rejects sort+search (406: search already sorts on relevancy),
+        // so an explicit sort scans pages into a pool and sorts in memory.
+        if (sort is null)
+        {
+            var offset = Math.Max(0, (page - 1) * pageSize);
+            var apicalypseQuery = $@"
 fields id, name, summary, first_release_date, total_rating, rating, cover.image_id, screenshots.image_id, genres.name, platforms.name, involved_companies.company.name, involved_companies.developer;
 search ""{sanitizedQuery}"";
-limit {pageSize};
+{whereClause}limit {pageSize};
 offset {offset};";
 
-        return await ExecuteIgdbQueryAsync(apicalypseQuery, clientId, token, page, pageSize, ct);
+            return await ExecuteIgdbQueryAsync(apicalypseQuery, clientId, token, page, pageSize, ct);
+        }
+
+        var pool = new List<MediaDto>();
+        for (var scanPage = 1; scanPage <= 4 && pool.Count < page * pageSize; scanPage++)
+        {
+            var scanOffset = (scanPage - 1) * pageSize;
+            var scanQuery = $@"
+fields id, name, summary, first_release_date, total_rating, rating, cover.image_id, screenshots.image_id, genres.name, platforms.name, involved_companies.company.name, involved_companies.developer;
+search ""{sanitizedQuery}"";
+{whereClause}limit {pageSize};
+offset {scanOffset};";
+
+            var scanned = await ExecuteIgdbQueryAsync(scanQuery, clientId, token, scanPage, pageSize, ct);
+            pool.AddRange(scanned.Items);
+            if (scanned.Items.Count < pageSize) break;
+        }
+
+        var sorted = SortMediaDtos(pool, sort);
+        var pageItems = sorted.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        return new PagedResponseDto<MediaDto>
+        {
+            Items = pageItems,
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = pool.Count,
+            TotalPages = Math.Max(1, (int)Math.Ceiling(pool.Count / (double)pageSize))
+        };
     }
 
     private async Task<MediaDto?> GetIgdbDetailsAsync(string externalId, CancellationToken ct)
