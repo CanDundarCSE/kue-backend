@@ -10,6 +10,8 @@ public interface IReviewService
         int page,
         int pageSize,
         int? currentUserId = null,
+        string? sort = null,
+        bool hideSpoilers = false,
         CancellationToken ct = default);
     Task<(List<ReviewDto> Reviews, int TotalCount)> GetUserReviewsAsync(
         int userId,

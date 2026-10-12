@@ -80,6 +80,8 @@ public class ReviewService : IReviewService
         int page,
         int pageSize,
         int? currentUserId = null,
+        string? sort = null,
+        bool hideSpoilers = false,
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
@@ -100,10 +102,22 @@ public class ReviewService : IReviewService
             // signed-in author still sees their own.
             .Where(r => r.IsPublic || r.UserId == currentUserId);
 
+        if (hideSpoilers)
+        {
+            query = query.Where(r => !r.ContainsSpoilers);
+        }
+
         var totalCount = await query.CountAsync(ct);
 
+        query = NormalizeReviewSort(sort) switch
+        {
+            "oldest" => query.OrderBy(r => r.CreatedAt).ThenBy(r => r.Id),
+            "highest" => query.OrderByDescending(r => r.Rating ?? -1).ThenByDescending(r => r.CreatedAt),
+            "lowest" => query.OrderBy(r => r.Rating ?? 11).ThenByDescending(r => r.CreatedAt),
+            _ => query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id),
+        };
+
         var reviews = await query
-            .OrderByDescending(r => r.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct);
@@ -111,6 +125,17 @@ public class ReviewService : IReviewService
         var dtos = reviews.Select(r => MapToDto(r)).ToList();
 
         return (dtos, totalCount);
+    }
+
+    private static string NormalizeReviewSort(string? sort)
+    {
+        return sort?.Trim().ToLowerInvariant() switch
+        {
+            "oldest" => "oldest",
+            "highest" => "highest",
+            "lowest" => "lowest",
+            _ => "newest",
+        };
     }
 
     public async Task<(List<ReviewDto> Reviews, int TotalCount)> GetUserReviewsAsync(

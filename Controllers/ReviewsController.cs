@@ -41,6 +41,8 @@ public class ReviewsController : ControllerBase
         int mediaId,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
+        [FromQuery] string? sort = null,
+        [FromQuery] bool hideSpoilers = false,
         CancellationToken ct = default)
     {
         var mediaExists = await _context.Media.AnyAsync(m => m.Id == mediaId, ct);
@@ -55,7 +57,7 @@ public class ReviewsController : ControllerBase
         var currentUserId = GetCurrentUserId();
 
         var (reviews, totalCount) = await _reviewService.GetMediaReviewsAsync(
-            mediaId, page, pageSize, currentUserId, ct);
+            mediaId, page, pageSize, currentUserId, sort, hideSpoilers, ct);
 
         var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
 
