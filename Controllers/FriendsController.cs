@@ -128,8 +128,8 @@ public class FriendsController : ControllerBase
                     userId: targetUser.Id,
                     actorId: currentUserId,
                     type: "friend_request_accepted",
-                    title: "Arkadaşlık İsteği Kabul Edildi",
-                    message: $"{senderUser?.Username ?? "Bir kullanıcı"} ile artık karşılıklı arkadaşsınız!",
+                    title: "Friend request accepted",
+                    message: $"{senderUser?.Username ?? "Someone"} accepted your friend request. You are now friends!",
                     referenceId: existing.Id,
                     referenceType: "friendship",
                     ct: ct);
@@ -150,8 +150,8 @@ public class FriendsController : ControllerBase
                 userId: targetUser.Id,
                 actorId: currentUserId,
                 type: "friend_request_received",
-                title: "Yeni Arkadaşlık İsteği",
-                message: $"{retrySender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
+                title: "New friend request",
+                message: $"{retrySender?.Username ?? "Someone"} sent you a friend request.",
                 referenceId: existing.Id,
                 referenceType: "friendship",
                 ct: ct);
@@ -175,8 +175,8 @@ public class FriendsController : ControllerBase
             userId: targetUser.Id,
             actorId: currentUserId,
             type: "friend_request_received",
-            title: "Yeni Arkadaşlık İsteği",
-            message: $"{freshSender?.Username ?? "Bir kullanıcı"} size arkadaşlık isteği gönderdi.",
+            title: "New friend request",
+            message: $"{freshSender?.Username ?? "Someone"} sent you a friend request.",
             referenceId: friendship.Id,
             referenceType: "friendship",
             ct: ct);
@@ -226,8 +226,8 @@ public class FriendsController : ControllerBase
             userId: request.RequesterId,
             actorId: currentUserId.Value,
             type: "friend_request_accepted",
-            title: "Arkadaşlık İsteği Kabul Edildi",
-            message: $"{acceptorUser?.Username ?? "Arkadaşınız"} arkadaşlık isteğinizi kabul etti.",
+            title: "Friend request accepted",
+            message: $"{acceptorUser?.Username ?? "Your friend"} accepted your friend request.",
             referenceId: request.Id,
             referenceType: "friendship",
             ct: ct);

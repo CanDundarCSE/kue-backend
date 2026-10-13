@@ -169,7 +169,8 @@ public class ImportProcessor
                     message: $"{job.AddedCount} added, {job.UpdatedCount} updated, {job.SkippedCount} skipped.",
                     referenceId: job.Id,
                     referenceType: "import",
-                    ct: ct);
+                    ct: ct,
+                    allowSelf: true);
             }
             catch (Exception ex)
             {

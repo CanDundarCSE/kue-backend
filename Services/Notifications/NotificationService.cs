@@ -31,9 +31,12 @@ public class NotificationService : INotificationService
         string message,
         int? referenceId = null,
         string? referenceType = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool allowSelf = false)
     {
-        if (userId == actorId) return;
+        // System events (import finished) notify the actor themselves;
+        // social events never do.
+        if (userId == actorId && !allowSelf) return;
 
         try
         {

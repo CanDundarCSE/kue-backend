@@ -10,5 +10,6 @@ public interface INotificationService
         string message,
         int? referenceId = null,
         string? referenceType = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        bool allowSelf = false);
 }
