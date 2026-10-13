@@ -239,6 +239,7 @@ public class FriendsController : ControllerBase
             Username = request.Requester.Username,
             KueId = request.Requester.KueId,
             Bio = request.Requester.Bio,
+            AvatarId = request.Requester.AvatarId,
             FriendsSince = request.UpdatedAt ?? request.CreatedAt
         };
 
@@ -381,6 +382,7 @@ public class FriendsController : ControllerBase
                 Username = friendUser.Username,
                 KueId = friendUser.KueId,
                 Bio = friendUser.Bio,
+                AvatarId = friendUser.AvatarId,
                 FriendsSince = f.UpdatedAt ?? f.CreatedAt
             };
         })
@@ -414,9 +416,11 @@ public class FriendsController : ControllerBase
                 RequesterUsername = f.Requester.Username,
                 RequesterKueId = f.Requester.KueId,
                 RequesterBio = f.Requester.Bio,
+                RequesterAvatarId = f.Requester.AvatarId,
                 AddresseeId = f.AddresseeId,
                 AddresseeUsername = f.Addressee.Username,
                 AddresseeKueId = f.Addressee.KueId,
+                AddresseeAvatarId = f.Addressee.AvatarId,
                 Status = f.Status,
                 CreatedAt = f.CreatedAt
             })
@@ -449,9 +453,11 @@ public class FriendsController : ControllerBase
                 RequesterUsername = f.Requester.Username,
                 RequesterKueId = f.Requester.KueId,
                 RequesterBio = f.Requester.Bio,
+                RequesterAvatarId = f.Requester.AvatarId,
                 AddresseeId = f.AddresseeId,
                 AddresseeUsername = f.Addressee.Username,
                 AddresseeKueId = f.Addressee.KueId,
+                AddresseeAvatarId = f.Addressee.AvatarId,
                 Status = f.Status,
                 CreatedAt = f.CreatedAt
             })
@@ -517,6 +523,7 @@ public class FriendsController : ControllerBase
                 Username = friendUser.Username,
                 KueId = friendUser.KueId,
                 Bio = friendUser.Bio,
+                AvatarId = friendUser.AvatarId,
                 FriendsSince = f.UpdatedAt ?? f.CreatedAt
             };
         })

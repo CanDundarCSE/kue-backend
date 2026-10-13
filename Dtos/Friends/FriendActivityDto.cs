@@ -7,7 +7,9 @@ public class FriendActivityDto
     // Friend / Actor user information (for avatar initial and display name in Image 2)
     public int UserId { get; set; }
     public string Username { get; set; } = null!;
+    public string? KueId { get; set; }
     public string? Bio { get; set; }
+    public string? AvatarId { get; set; }
     public string UserInitial { get; set; } = null!; // e.g. "M", "R", "A", "J", "N"
 
     // Activity presentation

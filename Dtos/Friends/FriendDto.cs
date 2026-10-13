@@ -7,5 +7,6 @@ public class FriendDto
     public string Username { get; set; } = null!;
     public string? KueId { get; set; }
     public string? Bio { get; set; }
+    public string? AvatarId { get; set; }
     public DateTime FriendsSince { get; set; }
 }
