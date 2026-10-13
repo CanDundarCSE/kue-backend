@@ -13,6 +13,14 @@ public class User
     /// </summary>
     public string? KueId { get; set; }
     public string PasswordHash { get; set; } = null!;
+
+    /// <summary>
+    /// Selected profile avatar (one of the ids in Constants/AvatarIds, served
+    /// by the web app from /public/avatars). Null means the first-letter
+    /// avatar — the default for rows predating the feature.
+    /// </summary>
+    public string? AvatarId { get; set; }
+
     public string? Bio { get; set; }
     public bool IsPrivate { get; set; } = false;
     public bool IsBanned { get; set; } = false;

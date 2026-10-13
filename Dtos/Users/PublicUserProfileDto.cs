@@ -6,6 +6,7 @@ public class PublicUserProfileDto
     public string Username { get; set; } = null!;
     public string? KueId { get; set; }
     public string? Bio { get; set; }
+    public string? AvatarId { get; set; }
     public bool IsPrivate { get; set; }
     public bool IsFriend { get; set; }
     public string FriendshipStatus { get; set; } = "none"; // "none", "pending_sent", "pending_received", "accepted"

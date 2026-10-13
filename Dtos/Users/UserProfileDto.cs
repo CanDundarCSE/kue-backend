@@ -6,6 +6,7 @@ public record UserProfileDto
     public string Username { get; init; } = null!;
     public string Email { get; init; } = null!;
     public string? KueId { get; init; }
+    public string? AvatarId { get; init; }
     public string? Bio { get; init; }
     public bool IsPrivate { get; init; }
     public IReadOnlyList<string> Roles { get; init; } = [];

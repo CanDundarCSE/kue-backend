@@ -12,5 +12,11 @@ public record UpdateProfileRequest(
     [MaxLength(500, ErrorMessage = "Bio must not exceed 500 characters")]
     string? Bio,
 
+    // Avatar semantics: null = leave unchanged, empty string = clear (fall
+    // back to the first-letter avatar), any other value must be one of the
+    // ids in Constants/AvatarIds.
+    [MaxLength(32)]
+    string? AvatarId,
+
     bool? IsPrivate
 );

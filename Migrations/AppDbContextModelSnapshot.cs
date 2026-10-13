@@ -604,6 +604,9 @@ namespace Kue.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AvatarId")
+                        .HasColumnType("text");
+
                     b.Property<string>("BanReason")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");

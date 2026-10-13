@@ -50,6 +50,7 @@ public class MeController : ControllerBase
             Username = user.Username,
             Email = user.Email,
             KueId = user.KueId,
+            AvatarId = user.AvatarId,
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,
@@ -125,6 +126,24 @@ public class MeController : ControllerBase
             user.IsPrivate = request.IsPrivate.Value;
         }
 
+        if (request.AvatarId is not null)
+        {
+            // "" clears the avatar (fall back to the first-letter one).
+            if (string.IsNullOrWhiteSpace(request.AvatarId))
+            {
+                user.AvatarId = null;
+            }
+            else
+            {
+                var avatarId = request.AvatarId.Trim();
+                if (!Kue.Api.Constants.AvatarIds.All.Contains(avatarId))
+                {
+                    return BadRequest(new MessageResponseDto("Unknown avatar."));
+                }
+                user.AvatarId = avatarId;
+            }
+        }
+
         try
         {
             await _context.SaveChangesAsync(ct);
@@ -141,6 +160,7 @@ public class MeController : ControllerBase
             Username = user.Username,
             Email = user.Email,
             KueId = user.KueId,
+            AvatarId = user.AvatarId,
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,
