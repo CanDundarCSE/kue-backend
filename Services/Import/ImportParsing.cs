@@ -218,75 +218,370 @@ public static class ImportParsing
         return raw.Select(x => x.Entry).ToList();
     }
 
-    // --- Trakt JSON export ---
+    // --- Trakt JSON export (single file + multi-file full export) ---
+
+    /// <summary>
+    /// Trakt VIP backups ship as ~44 loose .json files (watched-*, ratings-*,
+    /// collection-*, lists-*, ...). Most are empty "[]" for a given user; any
+    /// file with recognizable movie/show nodes is merged. Files that only
+    /// carry social/metadata (user-*, network-*, comments-*, notes-*, likes-*,
+    /// hidden-*) are skipped. Entries dedupe by external id, then title+year.
+    /// Status priority: completed > in_progress > planning. Collection means
+    /// "owns it", not "watched it", so it maps to planning and lets a watched
+    /// entry upgrade it to completed.
+    /// </summary>
+    public static List<ParsedEntry> ParseTraktFiles(IEnumerable<(string FileName, string Content)> files)
+    {
+        var merged = new Dictionary<string, ParsedEntry>(StringComparer.OrdinalIgnoreCase);
+        var titleIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var episodeCounts = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (rawName, content) in files)
+        {
+            var fileName = (rawName ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(content)) continue;
+            var trimmed = content.Trim();
+            if (trimmed is "[]" or "{}" or "") continue;
+
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(content);
+            }
+            catch (JsonException)
+            {
+                // One bad file must not sink the other 43.
+                continue;
+            }
+
+            using (doc)
+            {
+                var kind = ClassifyTraktFile(fileName);
+                if (kind == TraktFileKind.Ignore) continue;
+                foreach (var raw in ExtractTraktMedia(doc.RootElement, kind))
+                {
+                    MergeTraktEntry(merged, titleIndex, episodeCounts, raw, kind);
+                }
+            }
+        }
+
+        return merged.Values.ToList();
+    }
+
+    private enum TraktFileKind
+    {
+        Ignore,
+        Watched,
+        Ratings,
+        Collection,
+        Watchlist,
+        Favorites,
+        Playback,
+        CustomList,
+        Generic,
+    }
+
+    private static TraktFileKind ClassifyTraktFile(string fileName)
+    {
+        if (fileName.Contains("user-") || fileName.Contains("network-")
+            || fileName.Contains("comments-") || fileName.Contains("notes-")
+            || fileName.Contains("likes-") || fileName.Contains("hidden-"))
+        {
+            return TraktFileKind.Ignore;
+        }
+        if (fileName.Contains("ratings-")) return TraktFileKind.Ratings;
+        if (fileName.Contains("watched-playback")) return TraktFileKind.Playback;
+        if (fileName.Contains("watched-history") || fileName is "watched-movies.json" or "watched-shows.json"
+            || (fileName.Contains("watched-") && !fileName.Contains("lists-"))) return TraktFileKind.Watched;
+        if (fileName.Contains("collection-")) return TraktFileKind.Collection;
+        if (fileName.Contains("watchlist")) return TraktFileKind.Watchlist;
+        if (fileName.Contains("favorites") || fileName.Contains("favourites")) return TraktFileKind.Favorites;
+        if (fileName.Contains("lists-")) return TraktFileKind.CustomList;
+        return TraktFileKind.Generic;
+    }
+
+    /// <summary>True when any filename looks like a Trakt backup file.</summary>
+    public static bool LooksLikeTraktExport(IEnumerable<string> fileNames)
+    {
+        foreach (var raw in fileNames)
+        {
+            var name = (raw ?? string.Empty).Trim().ToLowerInvariant();
+            if (name is "watched-movies.json" or "watched-shows.json"
+                || name.Contains("watched-history") || name.Contains("watched-playback")
+                || name.Contains("ratings-") || name.Contains("collection-")
+                || name.Contains("lists-watchlist") || name.Contains("lists-favorites"))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private sealed class RawTraktMedia
+    {
+        public string Title { get; set; } = string.Empty;
+        public string MediaType { get; set; } = "movie";
+        public string? ExternalSource { get; set; }
+        public string? ExternalId { get; set; }
+        public int? Rating { get; set; }
+        public int? Year { get; set; }
+        public int? Progress { get; set; }
+        public string? EpisodeKey { get; set; }
+        /// <summary>Legacy single-file sections ({movies, watchlist}) carry their own status.</summary>
+        public string? StatusOverride { get; set; }
+    }
+
+    private static IEnumerable<RawTraktMedia> ExtractTraktMedia(JsonElement root, TraktFileKind kind)
+    {
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var node in root.EnumerateArray())
+            {
+                var raw = ExtractTraktNode(node);
+                if (raw is null) continue;
+                // Bare history-style arrays predate per-file kinds: they mean watched.
+                if (kind == TraktFileKind.Generic) raw.StatusOverride = "completed";
+                yield return raw;
+            }
+            yield break;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object) yield break;
+
+        // Legacy single-file shape: { movies: [...], shows: [...], watchlist: [...] }
+        foreach (var (prop, status) in new[] { ("movies", "completed"), ("shows", "completed"), ("watchlist", "planning"), ("items", (string?)null) })
+        {
+            if (root.TryGetProperty(prop, out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var node in arr.EnumerateArray())
+                {
+                    var raw = ExtractTraktNode(node);
+                    if (raw is null) continue;
+                    raw.StatusOverride = status;
+                    yield return raw;
+                }
+            }
+        }
+
+        // Custom-list shape: { name, items: [...] } is covered above via "items".
+        // Single object: { movie/show: {...} }
+        if (root.TryGetProperty("movie", out _) || root.TryGetProperty("show", out _))
+        {
+            var raw = ExtractTraktNode(root);
+            if (raw is not null) yield return raw;
+        }
+    }
+
+    /// <summary>
+    /// Pulls the movie/show out of one Trakt wrapper object. Season/episode
+    /// rows roll up to the parent show; history rows carry a per-episode key
+    /// so re-watches don't inflate the episode count.
+    /// </summary>
+    private static RawTraktMedia? ExtractTraktNode(JsonElement node)
+    {
+        if (node.ValueKind != JsonValueKind.Object) return null;
+
+        // History items tag their kind: { type: "movie"|"episode"|"show"|"season", ... }
+        var typeHint = GetString(node, "type")?.ToLowerInvariant();
+
+        JsonElement mediaNode = default;
+        string mediaType = "movie";
+        var hasMedia = false;
+
+        if (typeHint == "movie" && node.TryGetProperty("movie", out var tm))
+        {
+            mediaNode = tm; mediaType = "movie"; hasMedia = true;
+        }
+        else if ((typeHint is "episode" or "show" or "season") && node.TryGetProperty("show", out var ts))
+        {
+            mediaNode = ts; mediaType = "series"; hasMedia = true;
+        }
+        else if (node.TryGetProperty("movie", out var movie))
+        {
+            mediaNode = movie; mediaType = "movie"; hasMedia = true;
+        }
+        else if (node.TryGetProperty("show", out var show))
+        {
+            mediaNode = show; mediaType = "series"; hasMedia = true;
+        }
+        else if (node.TryGetProperty("title", out _) && node.TryGetProperty("ids", out _))
+        {
+            // Bare media object (no wrapper).
+            mediaNode = node; hasMedia = true;
+        }
+
+        if (!hasMedia || mediaNode.ValueKind != JsonValueKind.Object) return null;
+
+        var title = GetString(mediaNode, "title") ?? "";
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        var (extSource, extId) = BestTraktId(mediaNode);
+
+        // Rating lives on the wrapper (ratings-*.json), not inside the media node.
+        var rating = GetInt(node, "rating") ?? GetInt(mediaNode, "rating");
+        if (rating is < 1 or > 10) rating = null;
+
+        int? progress = null;
+        string? episodeKey = null;
+        if (node.TryGetProperty("episode", out var ep) && ep.ValueKind == JsonValueKind.Object)
+        {
+            var season = GetInt(ep, "season") ?? GetInt(node, "season");
+            var number = GetInt(ep, "number");
+            if (season.HasValue && number.HasValue) episodeKey = $"s{season}e{number}";
+        }
+
+        // Playback rows carry a 0-100 watch percent on the wrapper.
+        if (node.TryGetProperty("progress", out var prog) && prog.ValueKind == JsonValueKind.Number)
+        {
+            try
+            {
+                var percent = prog.TryGetInt32(out var pi) ? pi : (int)Math.Round(prog.GetDouble());
+                if (percent is >= 0 and <= 100) progress = percent;
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        return new RawTraktMedia
+        {
+            Title = title.Trim(),
+            MediaType = mediaType,
+            ExternalSource = extSource,
+            ExternalId = extId,
+            Rating = rating,
+            Year = GetInt(mediaNode, "year"),
+            Progress = progress,
+            EpisodeKey = episodeKey,
+        };
+    }
+
+    /// <summary>Prefer tmdb (matches the local catalog), then trakt, then imdb.</summary>
+    private static (string? Source, string? Id) BestTraktId(JsonElement mediaNode)
+    {
+        if (mediaNode.TryGetProperty("ids", out var ids) && ids.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var source in new[] { "tmdb", "trakt", "imdb" })
+            {
+                if (!ids.TryGetProperty(source, out var prop)) continue;
+                if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var num) && num > 0)
+                {
+                    return (source, num.ToString());
+                }
+                if (prop.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(prop.GetString()))
+                {
+                    return (source, prop.GetString()!.Trim());
+                }
+            }
+        }
+        return (null, null);
+    }
+
+    private static int StatusRank(string? status) => status switch
+    {
+        "completed" => 3,
+        "in_progress" => 2,
+        _ => 1,
+    };
+
+    private static int SourceRank(string? source) => source switch
+    {
+        "tmdb" => 3,
+        "trakt" => 2,
+        "imdb" => 1,
+        _ => 0,
+    };
+
+    private static void MergeTraktEntry(
+        Dictionary<string, ParsedEntry> merged,
+        Dictionary<string, string> titleIndex,
+        Dictionary<string, HashSet<string>> episodeCounts,
+        RawTraktMedia raw,
+        TraktFileKind kind)
+    {
+        var status = raw.StatusOverride ?? kind switch
+        {
+            TraktFileKind.Watched or TraktFileKind.Ratings => "completed",
+            TraktFileKind.Playback => "in_progress",
+            _ => "planning",
+        };
+        var favorite = kind == TraktFileKind.Favorites ? true : (bool?)null;
+
+        var key = raw.ExternalSource is not null && raw.ExternalId is not null
+            ? $"{raw.ExternalSource}:{raw.ExternalId}".ToLowerInvariant()
+            : $"title:{raw.MediaType}:{raw.Title.ToLowerInvariant()}:{raw.Year}";
+
+        // Same title seen first without ids, now with ids: migrate the entry.
+        var titleKey = $"title:{raw.MediaType}:{raw.Title.ToLowerInvariant()}:{raw.Year}";
+        if (key != titleKey && titleIndex.TryGetValue(titleKey, out var oldKey)
+            && merged.TryGetValue(oldKey, out var oldEntry)
+            && oldEntry.ExternalId is null)
+        {
+            merged.Remove(oldKey);
+            merged[key] = oldEntry;
+            titleIndex[titleKey] = key;
+        }
+
+        if (!merged.TryGetValue(key, out var entry))
+        {
+            entry = new ParsedEntry
+            {
+                Title = raw.Title,
+                MediaType = raw.MediaType,
+                ExternalSource = raw.ExternalSource,
+                ExternalId = raw.ExternalId,
+                Status = status,
+                Year = raw.Year,
+            };
+            merged[key] = entry;
+            titleIndex.TryAdd(titleKey, key);
+        }
+
+        if (StatusRank(status) >= StatusRank(entry.Status)) entry.Status = status;
+        if (raw.Rating.HasValue)
+        {
+            entry.Rating = entry.Rating.HasValue ? Math.Max(entry.Rating.Value, raw.Rating.Value) : raw.Rating;
+        }
+        if (favorite.HasValue) entry.IsFavorite = true;
+        // Playback percent is 0-100 and would mix units with the episode-count
+        // progress used for series, so only keep it for movies.
+        if (kind == TraktFileKind.Playback && raw.MediaType == "movie" && raw.Progress.HasValue)
+        {
+            var progress = raw.Progress.Value;
+            entry.Progress = entry.Progress.HasValue ? Math.Max(entry.Progress.Value, progress) : progress;
+        }
+        if (entry.Year is null) entry.Year = raw.Year;
+        if (SourceRank(raw.ExternalSource) > SourceRank(entry.ExternalSource))
+        {
+            entry.ExternalSource = raw.ExternalSource;
+            entry.ExternalId = raw.ExternalId;
+        }
+
+        // Series episode accounting: distinct episodes only, so history
+        // re-watches across history-1/history-2 don't inflate progress.
+        if (raw.MediaType == "series" && raw.EpisodeKey is not null)
+        {
+            if (!episodeCounts.TryGetValue(key, out var seen))
+            {
+                seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                episodeCounts[key] = seen;
+            }
+            if (seen.Add(raw.EpisodeKey))
+            {
+                entry.Progress = seen.Count;
+            }
+        }
+        else if (raw.MediaType == "series" && kind == TraktFileKind.Watched)
+        {
+            // watched-shows rows without per-episode detail still count as one.
+            entry.Progress = Math.Max(entry.Progress ?? 0, 1);
+        }
+    }
 
     private static List<ParsedEntry> ParseTraktJson(string content)
     {
-        using var doc = JsonDocument.Parse(content);
-        var entries = new List<ParsedEntry>();
-
-        void AddShow(JsonElement node, string mediaType, string defaultStatus)
-        {
-            var title = GetString(node, "title") ?? "";
-            if (string.IsNullOrWhiteSpace(title)) return;
-
-            string? tmdbId = null;
-            if (node.TryGetProperty("ids", out var ids) && ids.ValueKind == JsonValueKind.Object)
-            {
-                if (ids.TryGetProperty("tmdb", out var tmdb) && tmdb.ValueKind == JsonValueKind.Number)
-                {
-                    tmdbId = tmdb.GetInt32().ToString();
-                }
-            }
-
-            entries.Add(new ParsedEntry
-            {
-                Title = title.Trim(),
-                MediaType = mediaType,
-                ExternalSource = tmdbId is not null ? "tmdb" : null,
-                ExternalId = tmdbId,
-                Status = defaultStatus,
-                Rating = GetInt(node, "rating") is int r && r is >= 1 and <= 10 ? r : null,
-                Year = GetInt(node, "year"),
-            });
-        }
-
-        void AddNode(JsonElement node, string defaultStatus)
-        {
-            if (node.ValueKind != JsonValueKind.Object) return;
-            if (node.TryGetProperty("movie", out var movie)) AddShow(movie, "movie", defaultStatus);
-            else if (node.TryGetProperty("show", out var show)) AddShow(show, "series", defaultStatus);
-        }
-
-        var root = doc.RootElement;
-        if (root.ValueKind == JsonValueKind.Array)
-        {
-            // History-style array: [{ watched_at, movie/show: {...} }, ...]
-            foreach (var node in root.EnumerateArray()) AddNode(node, "completed");
-        }
-        else if (root.ValueKind == JsonValueKind.Object)
-        {
-            if (root.TryGetProperty("movies", out var movies) && movies.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var node in movies.EnumerateArray()) AddNode(node, "completed");
-            }
-            if (root.TryGetProperty("shows", out var shows) && shows.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var node in shows.EnumerateArray()) AddNode(node, "completed");
-            }
-            if (root.TryGetProperty("watchlist", out var watchlist) && watchlist.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var node in watchlist.EnumerateArray()) AddNode(node, "planning");
-            }
-            // Single collection object: { movie/show: {...}, ... }
-            if ((root.TryGetProperty("movie", out _) || root.TryGetProperty("show", out _))
-                && entries.Count == 0)
-            {
-                AddNode(root, "completed");
-            }
-        }
-
-        return entries;
+        // Single-file back-compat: route through the multi-file merger so
+        // ratings on the wrapper and id fallback behave the same.
+        return ParseTraktFiles([(string.Empty, content)]);
     }
 
     // --- Generic CSV ---

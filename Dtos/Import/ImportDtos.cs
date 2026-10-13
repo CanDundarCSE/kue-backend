@@ -1,9 +1,22 @@
 namespace Kue.Api.Dtos.Import;
 
+public class ImportFileDto
+{
+    public string FileName { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+}
+
 public class StartImportRequest
 {
     public string FileName { get; set; } = string.Empty;
     public string Content { get; set; } = string.Empty;
+    /// <summary>
+    /// Multi-file Trakt export: each entry is one .json file's text.
+    /// No zip archives are accepted (zip-bomb risk); the client sends
+    /// already-extracted .json texts. When present, Files is used and
+    /// Content is ignored.
+    /// </summary>
+    public List<ImportFileDto>? Files { get; set; }
     /// <summary>Optional format override: mal-xml, anilist-json, trakt-json, csv.</summary>
     public string? Source { get; set; }
     /// <summary>CSV only: explicit header-name mapping (title, status, score, progress, type, platform).</summary>

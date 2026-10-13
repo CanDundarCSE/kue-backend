@@ -20,6 +20,8 @@ public interface IImportService
 public class ImportService : IImportService
 {
     private const int MaxFileChars = 2_000_000;
+    private const int MaxFiles = 50;
+    private const int MaxTotalChars = 5_000_000;
     private static readonly HashSet<string> Formats = new(StringComparer.OrdinalIgnoreCase)
     {
         "mal-xml", "anilist-json", "trakt-json", "csv"
@@ -38,6 +40,12 @@ public class ImportService : IImportService
 
     public async Task<ImportJobDto> StartAsync(int userId, StartImportRequest request, CancellationToken ct = default)
     {
+        // Multi-file Trakt export: loose .json texts, never a zip archive.
+        if (request.Files is { Count: > 0 })
+        {
+            return await StartMultiAsync(userId, request, ct);
+        }
+
         var content = request.Content ?? string.Empty;
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -76,11 +84,94 @@ public class ImportService : IImportService
             throw new InvalidOperationException("Too many entries (5000 max). Split the file and try again.");
         }
 
+        var job = await CreateJobAsync(userId, entries, format, (request.FileName ?? string.Empty).Trim(), ct);
+        return job;
+    }
+
+    /// <summary>
+    /// Multi-file Trakt backup import. Files arrive as plain .json texts —
+    /// zip archives are rejected outright (zip-bomb risk), the client sends
+    /// already-extracted files.
+    /// </summary>
+    private async Task<ImportJobDto> StartMultiAsync(int userId, StartImportRequest request, CancellationToken ct)
+    {
+        var files = request.Files!;
+        if (files.Count > MaxFiles)
+        {
+            throw new InvalidOperationException($"Too many files ({MaxFiles} max). Select the Trakt .json files only.");
+        }
+
+        var source = string.IsNullOrWhiteSpace(request.Source)
+            ? "trakt-json"
+            : request.Source.Trim().ToLowerInvariant();
+        if (source != "trakt-json")
+        {
+            throw new InvalidOperationException("Uploading multiple files is only supported for Trakt exports.");
+        }
+        if (!ImportParsing.LooksLikeTraktExport(files.Select(f => f.FileName ?? string.Empty)))
+        {
+            throw new InvalidOperationException("These files don't look like a Trakt export.");
+        }
+
+        long total = 0;
+        var payload = new List<(string FileName, string Content)>(files.Count);
+        foreach (var file in files)
+        {
+            var name = (file.FileName ?? string.Empty).Trim();
+            var fileContent = file.Content ?? string.Empty;
+            if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) || IsZipBytes(fileContent))
+            {
+                throw new InvalidOperationException("Zip archives aren't accepted. Unzip the Trakt export first and select the .json files.");
+            }
+            if (fileContent.Length > MaxFileChars)
+            {
+                throw new InvalidOperationException($"'{name}' is too large (2 MB max per file).");
+            }
+            total += fileContent.Length;
+            if (total > MaxTotalChars)
+            {
+                throw new InvalidOperationException("These files are too large in total (5 MB max).");
+            }
+            payload.Add((name, fileContent));
+        }
+
+        List<ParsedEntry> entries;
+        try
+        {
+            entries = ImportParsing.ParseTraktFiles(payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse multi-file Trakt import for user {UserId}.", userId);
+            throw new InvalidOperationException("Could not parse these files as a Trakt export.");
+        }
+
+        if (entries.Count == 0)
+        {
+            throw new InvalidOperationException("No importable entries found in these files.");
+        }
+        if (entries.Count > 5000)
+        {
+            throw new InvalidOperationException("Too many entries (5000 max).");
+        }
+
+        var label = string.IsNullOrWhiteSpace(request.FileName)
+            ? $"Trakt export ({files.Count} files)"
+            : request.FileName.Trim();
+        return await CreateJobAsync(userId, entries, "trakt-json", label, ct);
+    }
+
+    private static bool IsZipBytes(string content) =>
+        content.Length >= 2 && content[0] == 'P' && content[1] == 'K';
+
+    private async Task<ImportJobDto> CreateJobAsync(
+        int userId, List<ParsedEntry> entries, string format, string fileName, CancellationToken ct)
+    {
         var job = new ImportJob
         {
             UserId = userId,
             Source = format,
-            FileName = (request.FileName ?? string.Empty).Trim(),
+            FileName = fileName,
             Status = "pending",
             TotalItems = entries.Count,
             CreatedAt = DateTime.UtcNow

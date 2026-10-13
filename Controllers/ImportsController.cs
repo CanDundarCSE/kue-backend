@@ -22,7 +22,9 @@ public class ImportsController : ControllerBase
 
     /// <summary>
     /// Upload an export file (MAL XML, AniList/Trakt JSON, CSV) and start a
-    /// background import. Returns immediately with the job.
+    /// background import. Trakt backups span many .json files: send them as
+    /// `files` (already unzipped .json texts; zip archives are rejected).
+    /// Returns immediately with the job.
     /// </summary>
     [HttpPost]
     [ProducesResponseType(typeof(ImportJobDto), StatusCodes.Status201Created)]
