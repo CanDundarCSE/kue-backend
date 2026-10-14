@@ -213,14 +213,12 @@ public class ExternalMediaService : IExternalMediaService
 
         if (normalizedType is "anime" or "manga")
         {
-            // For AniList, we'll use trending as a proxy for top since there's no direct top endpoint
-            return await GetAniListTrendingAsync(normalizedType, page, pageSize, ct);
+            return await GetAniListTopRatedAsync(normalizedType, page, pageSize, ct);
         }
 
         if (normalizedType is "game")
         {
-            // For IGDB, we'll use trending as a proxy for top
-            return await GetIgdbTrendingAsync(page, pageSize, ct);
+            return await GetIgdbTopRatedAsync(page, pageSize, ct);
         }
 
         // For TMDb (movies/series), we'll use the top_rated endpoint
@@ -1026,6 +1024,84 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         }
     }
 
+    // Top-rated anime/manga: same AniList shape as trending, but sorted by
+    // score so the "top rated" rail is genuinely top-rated instead of a
+    // duplicate of the trending rail.
+    private async Task<PagedResponseDto<MediaDto>> GetAniListTopRatedAsync(string type, int page, int pageSize, CancellationToken ct)
+    {
+        var anilistType = type.Equals("manga", StringComparison.OrdinalIgnoreCase) ? "MANGA" : "ANIME";
+
+        const string graphqlQuery = @"
+query ($type: MediaType, $page: Int, $perPage: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      total
+      lastPage
+    }
+    media(type: $type, sort: SCORE_DESC) {
+      id
+      type
+      title {
+        english
+        romaji
+      }
+      description
+      coverImage {
+        large
+      }
+      bannerImage
+      startDate {
+        year
+      }
+      averageScore
+      status
+      genres
+      episodes
+      chapters
+      volumes
+    }
+  }
+}";
+
+        var requestBody = new
+        {
+            query = graphqlQuery,
+            variables = new { type = anilistType, page, perPage = pageSize }
+        };
+
+        try
+        {
+            using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("https://graphql.anilist.co", content, ct);
+
+            if (!response.IsSuccessStatusCode) return EmptyPage(page, pageSize);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            var pageElement = doc.RootElement.GetProperty("data").GetProperty("Page");
+            var mediaArray = pageElement.GetProperty("media");
+
+            var items = mediaArray.EnumerateArray()
+                .Select(e => MapAniListElementToDto(e, type))
+                .ToList();
+
+            return new PagedResponseDto<MediaDto>
+            {
+                Items = items,
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = items.Count,
+                TotalPages = 1
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching AniList top rated");
+            return EmptyPage(page, pageSize);
+        }
+    }
+
     private static MediaDto MapAniListElementToDto(JsonElement element, string defaultType)
     {
         var id = element.GetProperty("id").GetInt32().ToString();
@@ -1785,7 +1861,10 @@ limit 1;";
         return null;
     }
 
-    private async Task<PagedResponseDto<MediaDto>> GetIgdbTrendingAsync(int page, int pageSize, CancellationToken ct)
+    // Top-rated games: same IGDB shape as trending, but sorted by rating
+    // (with the review-count gate for quality) so the "top rated" rail is
+    // genuinely top-rated instead of a duplicate of the trending rail.
+    private async Task<PagedResponseDto<MediaDto>> GetIgdbTopRatedAsync(int page, int pageSize, CancellationToken ct)
     {
         var token = await GetTwitchAccessTokenAsync(ct);
         var clientId = _configuration["Igdb:ClientId"];
@@ -1807,7 +1886,40 @@ limit 1;";
         var apicalypseQuery = $@"
 fields id, name, summary, first_release_date, total_rating, rating, cover.image_id, screenshots.image_id, genres.name, platforms.name, involved_companies.company.name, involved_companies.developer;
 where total_rating_count > 25 & first_release_date != null;
-sort total_rating_count desc;
+sort total_rating desc;
+limit {pageSize};
+offset {offset};";
+
+        return await ExecuteIgdbQueryAsync(apicalypseQuery, clientId, token, page, pageSize, ct);
+    }
+
+    private async Task<PagedResponseDto<MediaDto>> GetIgdbTrendingAsync(int page, int pageSize, CancellationToken ct)
+    {
+        var token = await GetTwitchAccessTokenAsync(ct);
+        var clientId = _configuration["Igdb:ClientId"];
+
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            return GetFallbackSampleGame(page, pageSize);
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            // Credentials are configured but Twitch is unreachable: signal an
+            // outage (empty) so callers fall back to the local catalog
+            // instead of serving the dev sample.
+            return EmptyPage(page, pageSize);
+        }
+
+        var offset = Math.Max(0, (page - 1) * pageSize);
+        // Hypes (IGDB's "what's hot" signal) instead of all-time review
+        // count, so the games trending rail stays current. No rating gate:
+        // hyped titles may be unreleased. The date gate keeps undated
+        // entries out while still including upcoming releases.
+        var apicalypseQuery = $@"
+fields id, name, summary, first_release_date, total_rating, rating, hypes, cover.image_id, screenshots.image_id, genres.name, platforms.name, involved_companies.company.name, involved_companies.developer;
+where first_release_date != null;
+sort hypes desc;
 limit {pageSize};
 offset {offset};";
 
