@@ -431,6 +431,43 @@ namespace Kue.Api.Migrations
                     b.ToTable("Media");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.MiniGameScore", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Game")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int>("RoundsTotal")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("RoundsWon")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Score")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Game", "Score");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("MiniGameScores");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.Notification", b =>
                 {
                     b.Property<int>("Id")
@@ -625,6 +662,12 @@ namespace Kue.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
+
+                    b.Property<int>("GameBalance")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("GameTotalEarned")
+                        .HasColumnType("integer");
 
                     b.Property<bool>("IsBanned")
                         .ValueGeneratedOnAdd()
@@ -843,6 +886,17 @@ namespace Kue.Api.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Kue.Api.Entities.MiniGameScore", b =>
+                {
+                    b.HasOne("Kue.Api.Entities.User", "User")
+                        .WithMany("MiniGameScores")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Kue.Api.Entities.Notification", b =>
                 {
                     b.HasOne("Kue.Api.Entities.User", "Actor")
@@ -968,6 +1022,8 @@ namespace Kue.Api.Migrations
                     b.Navigation("CustomLists");
 
                     b.Navigation("LibraryEntries");
+
+                    b.Navigation("MiniGameScores");
 
                     b.Navigation("Notifications");
 

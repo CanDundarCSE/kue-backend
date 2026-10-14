@@ -22,12 +22,22 @@ public class User
     public string? AvatarId { get; set; }
 
     public string? Bio { get; set; }
-    public bool IsPrivate { get; set; } = false;
-    public bool IsBanned { get; set; } = false;
+    public bool IsPrivate { get; set; } = false;    public bool IsBanned { get; set; } = false;
     public string? BanReason { get; set; }
     public DateTime? BannedAt { get; set; }
     public List<string> Roles { get; set; } = ["User"];
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Spendable mini-game points. Earned by solving rounds, spent on hints.
+    /// Starts at zero, so brand-new players can't buy hints on round one.
+    /// </summary>
+    public int GameBalance { get; set; } = 0;
+
+    /// <summary>
+    /// Lifetime mini-game earnings. Never decreases; backs the profile stats.
+    /// </summary>
+    public int GameTotalEarned { get; set; } = 0;
 
     public string? PasswordResetToken { get; set; }
     public DateTime? PasswordResetTokenExpiresAt { get; set; }
@@ -41,4 +51,5 @@ public class User
     public List<Notification> TriggeredNotifications { get; set; } = [];
     public List<UserActivity> Activities { get; set; } = [];
     public List<Review> Reviews { get; set; } = [];
+    public List<MiniGameScore> MiniGameScores { get; set; } = [];
 }

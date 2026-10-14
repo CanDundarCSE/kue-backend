@@ -19,6 +19,7 @@ public class AppDbContext : DbContext
     public DbSet<Review> Reviews => Set<Review>();
     public DbSet<ImportJob> ImportJobs => Set<ImportJob>();
     public DbSet<ImportItem> ImportItems => Set<ImportItem>();
+    public DbSet<MiniGameScore> MiniGameScores => Set<MiniGameScore>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -295,6 +296,20 @@ public class AppDbContext : DbContext
             entity.HasOne(i => i.Job)
                   .WithMany(j => j.Items)
                   .HasForeignKey(i => i.JobId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MiniGameScore>(entity =>
+        {
+            entity.HasKey(s => s.Id);
+            entity.HasIndex(s => new { s.Game, s.Score });
+            entity.HasIndex(s => new { s.UserId, s.CreatedAt });
+
+            entity.Property(s => s.Game).HasMaxLength(50).IsRequired();
+
+            entity.HasOne(s => s.User)
+                  .WithMany(u => u.MiniGameScores)
+                  .HasForeignKey(s => s.UserId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
     }
