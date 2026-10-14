@@ -28,6 +28,7 @@ public class MiniGamesController : ControllerBase
         ["year"] = 10,
         ["type"] = 15,
         ["firstLetter"] = 25,
+        ["fiftyFifty"] = 15,
     };
 
     private readonly AppDbContext _context;
@@ -170,52 +171,56 @@ public class MiniGamesController : ControllerBase
         game = string.IsNullOrWhiteSpace(game) ? PosterGuessGame : game.Trim();
         limit = Math.Clamp(limit, 1, 50);
 
-        // Best game per user. Private accounts stay hidden unless it's you,
-        // matching the privacy rule on the public ratings endpoints.
-        // Grouping runs in memory: EF Core can't translate per-group First()
-        // with an include, and score tables stay small enough for it.
+        // Cumulative board: whoever earned the most total points leads, so a
+        // perfect game never permanently locks the top spot — anyone can be
+        // overtaken by earning more. Ties break by best single game, then
+        // fewest games (same total in fewer games = more skilled).
+        // Grouping runs in memory: EF Core can't translate per-group
+        // aggregates with an include, and score tables stay small enough.
         var rows = await _context.MiniGameScores
             .AsNoTracking()
             .Include(s => s.User)
             .Where(s => s.Game == game && (!s.User.IsPrivate || s.UserId == userId.Value))
             .OrderByDescending(s => s.Score)
-            .ThenBy(s => s.CreatedAt)
-            .Take(1000)
+            .Take(2000)
             .ToListAsync(ct);
+
+        LeaderboardEntryDto MapEntry(int id, string username, string? avatarId, int total, int best, int games) =>
+            new()
+            {
+                UserId = id,
+                Username = username,
+                AvatarId = avatarId,
+                TotalScore = total,
+                BestScore = best,
+                GamesPlayed = games,
+            };
 
         var bestPerUser = rows
             .GroupBy(s => s.UserId)
-            .Select(g => g.First())
-            .OrderByDescending(s => s.Score)
-            .ThenBy(s => s.CreatedAt)
+            .Select(g => MapEntry(
+                g.Key,
+                g.First().User.Username,
+                g.First().User.AvatarId,
+                g.Sum(s => s.Score),
+                g.Max(s => s.Score),
+                g.Count()))
+            .OrderByDescending(e => e.TotalScore)
+            .ThenByDescending(e => e.BestScore)
+            .ThenBy(e => e.GamesPlayed)
             .Take(limit)
-            .Select(s => new LeaderboardEntryDto
-            {
-                UserId = s.UserId,
-                Username = s.User.Username,
-                AvatarId = s.User.AvatarId,
-                BestScore = s.Score,
-                RoundsWon = s.RoundsWon,
-                AchievedAt = s.CreatedAt,
-            })
             .ToList();
 
-        var mine = await _context.MiniGameScores
-            .AsNoTracking()
-            .Include(s => s.User)
-            .Where(s => s.Game == game && s.UserId == userId.Value)
-            .OrderByDescending(s => s.Score)
-            .ThenBy(s => s.CreatedAt)
-            .Select(s => new LeaderboardEntryDto
-            {
-                UserId = s.UserId,
-                Username = s.User.Username,
-                AvatarId = s.User.AvatarId,
-                BestScore = s.Score,
-                RoundsWon = s.RoundsWon,
-                AchievedAt = s.CreatedAt,
-            })
-            .FirstOrDefaultAsync(ct);
+        var own = rows.Where(s => s.UserId == userId.Value).ToList();
+        LeaderboardEntryDto? mine = own.Count == 0
+            ? null
+            : MapEntry(
+                userId.Value,
+                own[0].User.Username,
+                own[0].User.AvatarId,
+                own.Sum(s => s.Score),
+                own.Max(s => s.Score),
+                own.Count);
 
         return Ok(new LeaderboardResponseDto { Entries = bestPerUser, Mine = mine });
     }

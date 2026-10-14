@@ -47,9 +47,9 @@ public class LeaderboardEntryDto
     public int UserId { get; set; }
     public string Username { get; set; } = null!;
     public string? AvatarId { get; set; }
+    public int TotalScore { get; set; }
     public int BestScore { get; set; }
-    public int RoundsWon { get; set; }
-    public DateTime AchievedAt { get; set; }
+    public int GamesPlayed { get; set; }
 }
 
 public class LeaderboardResponseDto
