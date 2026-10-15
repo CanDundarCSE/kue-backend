@@ -37,6 +37,7 @@ public class AppDbContext : DbContext
             entity.Property(u => u.Bio).HasMaxLength(500);
             entity.Property(u => u.IsPrivate).HasDefaultValue(false);
             entity.Property(u => u.IsBanned).HasDefaultValue(false);
+            entity.Property(u => u.IsTermsAccepted).HasDefaultValue(false);
             entity.Property(u => u.BanReason).HasMaxLength(500);
             entity.Property(u => u.PasswordResetToken).HasMaxLength(128);
         });

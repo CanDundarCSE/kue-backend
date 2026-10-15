@@ -53,6 +53,13 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
+        // Consent to the Privacy Policy and Terms of Service is mandatory. Reject
+        // before any account work so a non-consenting signup can never persist.
+        if (!request.IsTermsAccepted)
+        {
+            throw new InvalidOperationException("You must accept the Privacy Policy and Terms of Service to create an account.");
+        }
+
         var username = request.Username.Trim();
         if (username.Length < 3)
         {
@@ -77,7 +84,9 @@ public class AuthService : IAuthService
             Email = request.Email,
             KueId = await GenerateUniqueKueIdAsync(cancellationToken),
             PasswordHash = _passwordHasher.HashPassword(null!, request.Password),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            IsTermsAccepted = true,
+            TermsAcceptedAt = DateTime.UtcNow
         };
 
         _context.Users.Add(user);

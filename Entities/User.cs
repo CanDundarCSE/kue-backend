@@ -29,6 +29,17 @@ public class User
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// Explicit consent to the Privacy Policy and Terms of Service, captured at
+    /// registration. False for rows that predate the feature/consent.
+    /// </summary>
+    public bool IsTermsAccepted { get; set; } = false;
+
+    /// <summary>
+    /// UTC moment the terms were accepted. Null for rows predating the feature.
+    /// </summary>
+    public DateTime? TermsAcceptedAt { get; set; }
+
+    /// <summary>
     /// Spendable mini-game points. Earned by solving rounds, spent on hints.
     /// Starts at zero, so brand-new players can't buy hints on round one.
     /// </summary>
