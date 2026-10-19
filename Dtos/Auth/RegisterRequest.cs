@@ -19,5 +19,10 @@ public record RegisterRequest(
     // Explicit consent to the Privacy Policy and Terms of Service. Validated in
     // AuthService (not with a DataAnnotation) so the rejection comes back as the
     // same { message } shape the frontend already renders.
-    bool IsTermsAccepted
+    bool IsTermsAccepted,
+
+    // Version of the legal documents the client displayed (LEGAL_VERSION in the
+    // web app). Recorded so we can prove which text was accepted; a stale value
+    // is rejected so a cached consent screen cannot accept an outdated policy.
+    string? TermsVersion = null
 );

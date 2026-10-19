@@ -5,6 +5,7 @@ using Kue.Api.Extensions;
 using Kue.Api.Middlewares;
 using Kue.Api.Services;
 using Kue.Api.Services.Background;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -40,7 +41,24 @@ builder.Services.AddBrevoEmail(builder.Configuration);
 // ---------------------------------------------------------------------
 // 3. Security & Middleware
 // ---------------------------------------------------------------------
-builder.Services.AddCorsPolicy();
+// Behind a managed proxy (Render, Cloudflare, nginx) TLS terminates upstream
+// and the app sees plain HTTP. Trust the forwarded scheme so HTTPS redirection
+// and cookie `Secure` decisions match what the browser actually used. Known
+// proxies are cleared in production because the platform edge is the only
+// route to the container; in development the middleware keeps its defaults.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+
+    if (!builder.Environment.IsDevelopment())
+    {
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    }
+});
+
+builder.Services.AddCorsPolicy(builder.Configuration);
 builder.Services.AddJwtAuthentication(builder.Configuration);
 
 // ---------------------------------------------------------------------
@@ -91,6 +109,8 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
     app.MapScalarApiReference();
 }
+
+app.UseForwardedHeaders();
 
 app.UseHttpsRedirection();
 

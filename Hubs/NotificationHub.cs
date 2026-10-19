@@ -1,3 +1,4 @@
+using Kue.Api.Extensions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -5,9 +6,9 @@ namespace Kue.Api.Hubs;
 
 /// <summary>
 /// SignalR Hub for real-time notifications and unread badge updates.
-/// Clients connect to /hubs/notifications with their JWT bearer token.
+/// Clients connect to /hubs/notifications with a short-lived hub token.
 /// </summary>
-[Authorize]
+[Authorize(AuthenticationSchemes = JwtExtensions.HubScheme)]
 public class NotificationHub : Hub
 {
     private readonly ILogger<NotificationHub> _logger;

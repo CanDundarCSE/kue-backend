@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using Kue.Api.Constants;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Auth;
 using Kue.Api.Entities;
@@ -60,6 +61,14 @@ public class AuthService : IAuthService
             throw new InvalidOperationException("You must accept the Privacy Policy and Terms of Service to create an account.");
         }
 
+        // The client must have shown the current documents. A stale version means
+        // a cached consent screen accepted text we no longer publish, so refuse
+        // rather than record consent to the wrong policy.
+        if (!string.Equals(request.TermsVersion, LegalVersion.Current, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The Privacy Policy or Terms of Service has changed. Please review and accept the current version.");
+        }
+
         var username = request.Username.Trim();
         if (username.Length < 3)
         {
@@ -86,7 +95,8 @@ public class AuthService : IAuthService
             PasswordHash = _passwordHasher.HashPassword(null!, request.Password),
             CreatedAt = DateTime.UtcNow,
             IsTermsAccepted = true,
-            TermsAcceptedAt = DateTime.UtcNow
+            TermsAcceptedAt = DateTime.UtcNow,
+            TermsVersion = LegalVersion.Current
         };
 
         _context.Users.Add(user);
@@ -584,7 +594,8 @@ public class AuthService : IAuthService
             Email = user.Email,
             KueId = user.KueId,
             Bio = user.Bio,
-            Roles = user.Roles ?? new List<string> { "User" }
+            Roles = user.Roles ?? new List<string> { "User" },
+            TermsVersion = user.TermsVersion
         };
     }
 

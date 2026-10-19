@@ -40,6 +40,13 @@ public class User
     public DateTime? TermsAcceptedAt { get; set; }
 
     /// <summary>
+    /// Version of the Privacy Policy and Terms of Service the user accepted
+    /// (see Constants/LegalVersion). Null for rows predating version tracking,
+    /// which makes them re-accept the current documents on next sign-in.
+    /// </summary>
+    public string? TermsVersion { get; set; }
+
+    /// <summary>
     /// Spendable mini-game points. Earned by solving rounds, spent on hints.
     /// Starts at zero, so brand-new players can't buy hints on round one.
     /// </summary>

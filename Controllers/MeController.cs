@@ -1,7 +1,9 @@
 using System.Security.Claims;
+using Kue.Api.Constants;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Common;
 using Kue.Api.Dtos.Users;
+using Kue.Api.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -16,11 +18,16 @@ public class MeController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly Kue.Api.Services.Activity.IActivityService _activityService;
+    private readonly IConfiguration _configuration;
 
-    public MeController(AppDbContext context, Kue.Api.Services.Activity.IActivityService activityService)
+    public MeController(
+        AppDbContext context,
+        Kue.Api.Services.Activity.IActivityService activityService,
+        IConfiguration configuration)
     {
         _context = context;
         _activityService = activityService;
+        _configuration = configuration;
     }
 
     [HttpGet]
@@ -54,7 +61,8 @@ public class MeController : ControllerBase
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,
-            CreatedAt = user.CreatedAt
+            CreatedAt = user.CreatedAt,
+            TermsVersion = user.TermsVersion
         });
     }
 
@@ -164,7 +172,8 @@ public class MeController : ControllerBase
             Bio = user.Bio,
             IsPrivate = user.IsPrivate,
             Roles = user.Roles,
-            CreatedAt = user.CreatedAt
+            CreatedAt = user.CreatedAt,
+            TermsVersion = user.TermsVersion
         });
     }
 
@@ -221,6 +230,89 @@ public class MeController : ControllerBase
         });
 
         return NoContent();
+    }
+
+    [HttpPost("terms")]
+    [ProducesResponseType(typeof(UserProfileDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> AcceptTerms([FromBody] AcceptTermsRequest request, CancellationToken ct)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+        {
+            return Unauthorized();
+        }
+
+        if (!request.IsTermsAccepted)
+        {
+            return BadRequest(new MessageResponseDto(
+                "You must accept the Privacy Policy and Terms of Service to continue."));
+        }
+
+        if (!string.Equals(request.TermsVersion, LegalVersion.Current, StringComparison.Ordinal))
+        {
+            return BadRequest(new MessageResponseDto(
+                "The Privacy Policy or Terms of Service has changed. Please reload and review the current version."));
+        }
+
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId.Value, ct);
+        if (user is null)
+        {
+            return NotFound(new MessageResponseDto("User not found."));
+        }
+
+        user.IsTermsAccepted = true;
+        user.TermsAcceptedAt = DateTime.UtcNow;
+        user.TermsVersion = LegalVersion.Current;
+
+        await _context.SaveChangesAsync(ct);
+
+        return Ok(new UserProfileDto
+        {
+            Id = user.Id,
+            Username = user.Username,
+            Email = user.Email,
+            KueId = user.KueId,
+            AvatarId = user.AvatarId,
+            Bio = user.Bio,
+            IsPrivate = user.IsPrivate,
+            Roles = user.Roles,
+            CreatedAt = user.CreatedAt,
+            TermsVersion = user.TermsVersion
+        });
+    }
+
+    // Mints a short-lived hub token for the browser's SignalR connection. The
+    // access token stays in an HttpOnly cookie, so cross-origin hub connections
+    // (split web/API hosting) never need to expose it to JavaScript.
+    [HttpPost("hub-token")]
+    [ProducesResponseType(typeof(HubTokenResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> CreateHubToken(CancellationToken ct)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null)
+        {
+            return Unauthorized();
+        }
+
+        var user = await _context.Users
+            .FirstOrDefaultAsync(u => u.Id == userId.Value && !u.IsBanned, ct);
+        if (user is null)
+        {
+            return NotFound(new MessageResponseDto("User not found."));
+        }
+
+        var (token, expiresAt) = HubTokenFactory.Create(user, _configuration);
+
+        return Ok(new HubTokenResponseDto
+        {
+            Token = token,
+            ExpiresAt = expiresAt
+        });
     }
 
     private int? GetCurrentUserId()

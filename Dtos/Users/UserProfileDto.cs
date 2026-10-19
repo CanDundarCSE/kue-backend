@@ -11,4 +11,10 @@ public record UserProfileDto
     public bool IsPrivate { get; init; }
     public IReadOnlyList<string> Roles { get; init; } = [];
     public DateTime CreatedAt { get; init; }
+
+    /// <summary>
+    /// Legal document version this user has accepted. The web app compares it
+    /// with LEGAL_VERSION and re-prompts when they differ.
+    /// </summary>
+    public string? TermsVersion { get; init; }
 }

@@ -706,6 +706,10 @@ namespace Kue.Api.Migrations
                     b.Property<DateTime?>("TermsAcceptedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("TermsVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<string>("Username")
                         .IsRequired()
                         .HasMaxLength(50)
