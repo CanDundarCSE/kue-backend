@@ -3,6 +3,8 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Admin;
 using Kue.Api.Dtos.Common;
@@ -224,7 +226,8 @@ public class AdminController : ControllerBase
     // ==========================================
 
     /// <summary>
-    /// Bootstrap initial admin. Can only be invoked when zero admins exist in the database.
+    /// Bootstrap the first admin. Requires the one-time Admin__BootstrapSecret
+    /// header and is permanently disabled as soon as an admin exists.
     /// </summary>
     [HttpPost("bootstrap")]
     [Authorize]
@@ -235,6 +238,23 @@ public class AdminController : ControllerBase
     {
         var currentUserId = GetCurrentUserId();
         if (currentUserId is null) return Unauthorized();
+
+        var expectedSecret = _configuration["Admin:BootstrapSecret"];
+        if (string.IsNullOrWhiteSpace(expectedSecret))
+        {
+            return BadRequest(new MessageResponseDto(
+                "Admin bootstrap is disabled. Set Admin__BootstrapSecret on the API and send it " +
+                "in the X-Bootstrap-Secret header, or promote the first admin in the database."));
+        }
+
+        var providedSecret = Request.Headers["X-Bootstrap-Secret"].ToString();
+        if (!SecretsMatch(providedSecret, expectedSecret))
+        {
+            _logger.LogWarning(
+                "Rejected admin bootstrap attempt for user {UserId}: invalid bootstrap secret.",
+                currentUserId);
+            return Unauthorized(new MessageResponseDto("Invalid bootstrap secret."));
+        }
 
         // Safety: If any admin already exists in the system, permanently disable bootstrap
         var anyAdmin = await _context.Users.AnyAsync(u => u.Roles.Contains("Admin") || u.Roles.Contains("admin"), ct);
@@ -783,6 +803,13 @@ public class AdminController : ControllerBase
     {
         var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
         return int.TryParse(idClaim, out var id) ? id : null;
+    }
+
+    private static bool SecretsMatch(string provided, string expected)
+    {
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(provided),
+            Encoding.UTF8.GetBytes(expected));
     }
 
     private static Expression<Func<User, AdminUserDto>> UserProjection(DateTime now)
