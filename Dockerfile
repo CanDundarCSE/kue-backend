@@ -2,12 +2,13 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Restore only the project file first so image layers cache package restores.
-COPY Kue.Api/Kue.Api.csproj Kue.Api/
-RUN dotnet restore Kue.Api/Kue.Api.csproj
+# Restore only the project file first so package restores stay cached when
+# application code changes.
+COPY Kue.Api.csproj ./
+RUN dotnet restore Kue.Api.csproj
 
-COPY Kue.Api/ Kue.Api/
-RUN dotnet publish Kue.Api/Kue.Api.csproj \
+COPY . ./
+RUN dotnet publish Kue.Api.csproj \
     -c Release \
     -o /app/publish \
     /p:UseAppHost=false
