@@ -19,7 +19,7 @@ public class MediaService : IMediaService
         _logger = logger;
     }
 
-    public async Task<Entities.Media> GetOrCreateMediaAsync(AddToLibraryRequest request, CancellationToken ct = default)
+    public async Task<Entities.Media> GetOrCreateMediaAsync(AddToLibraryRequest request, CancellationToken ct = default, bool requireExternalDetails = false)
     {
         // 1. If MediaId was already provided, look up in database
         if (request.MediaId.HasValue && request.MediaId.Value > 0)
@@ -56,6 +56,12 @@ public class MediaService : IMediaService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Could not fetch details from external service for {Type} {Id}", normalizedType, request.ExternalId);
+            }
+
+            if (requireExternalDetails && fetchedDto is null)
+            {
+                throw new InvalidOperationException(
+                    $"External source '{normalizedSource}' did not return metadata for {normalizedType} '{request.ExternalId}'.");
             }
 
             var title = fetchedDto?.Title ?? request.Title ?? "Untitled Media";

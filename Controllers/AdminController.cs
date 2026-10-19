@@ -1,3 +1,7 @@
+using System.Diagnostics;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Claims;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Admin;
@@ -22,18 +26,202 @@ public class AdminController : ControllerBase
     private readonly IExternalMediaService _externalMediaService;
     private readonly IMediaService _mediaService;
     private readonly ILogger<AdminController> _logger;
+    private readonly IWebHostEnvironment _environment;
+    private readonly IConfiguration _configuration;
 
     public AdminController(
         AppDbContext context,
         IExternalMediaService externalMediaService,
         IMediaService mediaService,
-        ILogger<AdminController> logger)
+        ILogger<AdminController> logger,
+        IWebHostEnvironment environment,
+        IConfiguration configuration)
     {
         _context = context;
         _externalMediaService = externalMediaService;
         _mediaService = mediaService;
         _logger = logger;
+        _environment = environment;
+        _configuration = configuration;
     }
+
+    // ==========================================
+    // DASHBOARD & SERVER HEALTH
+    // ==========================================
+
+    /// <summary>
+    /// Aggregate counters plus process/database health for the admin overview.
+    /// </summary>
+    [HttpGet("dashboard")]
+    [Authorize(Roles = "Admin,admin")]
+    [ProducesResponseType(typeof(AdminDashboardDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetDashboard(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+
+        var stats = new AdminStatsDto
+        {
+            TotalUsers = await _context.Users.CountAsync(ct),
+            BannedUsers = await _context.Users.CountAsync(u => u.IsBanned, ct),
+            AdminUsers = await _context.Users.CountAsync(
+                u => u.Roles.Contains("Admin") || u.Roles.Contains("admin"), ct),
+            NewUsersLast7Days = await _context.Users.CountAsync(u => u.CreatedAt >= now.AddDays(-7), ct),
+            ActiveSessions = await _context.RefreshTokens.CountAsync(
+                r => !r.IsRevoked && r.RevokedAtUtc == null && r.ExpiresAt > now, ct),
+            TotalMedia = await _context.Media.IgnoreQueryFilters().CountAsync(ct),
+            DeletedMedia = await _context.Media.IgnoreQueryFilters().CountAsync(m => m.IsDeleted, ct),
+            LibraryEntries = await _context.LibraryEntries.IgnoreQueryFilters().CountAsync(ct),
+            Reviews = await _context.Reviews.IgnoreQueryFilters().CountAsync(ct),
+            CustomLists = await _context.CustomLists.CountAsync(ct),
+            UserActivities = await _context.UserActivities.CountAsync(ct),
+            ImportJobs = await _context.ImportJobs.CountAsync(ct),
+        };
+
+        var server = await BuildServerHealthAsync(ct);
+        var recentUsers = await _context.Users
+            .AsNoTracking()
+            .OrderByDescending(u => u.CreatedAt)
+            .Take(5)
+            .Select(UserProjection(now))
+            .ToListAsync(ct);
+
+        return Ok(new AdminDashboardDto
+        {
+            Stats = stats,
+            Server = server,
+            RecentUsers = recentUsers,
+        });
+    }
+
+    private async Task<ServerHealthDto> BuildServerHealthAsync(CancellationToken ct)
+    {
+        var process = Process.GetCurrentProcess();
+        var startedAt = TryGetStartTime(process);
+        var uptime = DateTime.UtcNow - startedAt;
+
+        var dbStopwatch = Stopwatch.StartNew();
+        bool databaseReachable;
+        try
+        {
+            databaseReachable = await _context.Database.CanConnectAsync(ct);
+        }
+        catch
+        {
+            databaseReachable = false;
+        }
+        dbStopwatch.Stop();
+
+        long? databaseSizeBytes = null;
+        var pendingMigrations = 0;
+        string? latestMigration = null;
+
+        if (databaseReachable)
+        {
+            try
+            {
+                databaseSizeBytes = await _context.Database
+                    .SqlQueryRaw<long>("SELECT pg_database_size(current_database()) AS \"Value\"")
+                    .SingleAsync(ct);
+            }
+            catch
+            {
+                databaseSizeBytes = null;
+            }
+
+            try
+            {
+                pendingMigrations = (await _context.Database.GetPendingMigrationsAsync(ct)).Count();
+                latestMigration = (await _context.Database.GetAppliedMigrationsAsync(ct)).LastOrDefault();
+            }
+            catch
+            {
+                // Leave the defaults when the migration history cannot be read.
+            }
+        }
+
+        return new ServerHealthDto
+        {
+            Status = databaseReachable ? "healthy" : "degraded",
+            CheckedAt = DateTimeOffset.UtcNow,
+            Environment = _environment.EnvironmentName,
+            Runtime = RuntimeInformation.FrameworkDescription,
+            Version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown",
+            MachineName = Environment.MachineName,
+            ProcessorCount = Environment.ProcessorCount,
+            ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
+            OsDescription = RuntimeInformation.OSDescription,
+            StartedAt = new DateTimeOffset(startedAt, TimeSpan.Zero),
+            UptimeSeconds = (long)Math.Max(0, uptime.TotalSeconds),
+            WorkingSetBytes = process.WorkingSet64,
+            GcHeapBytes = GC.GetTotalMemory(false),
+            ThreadCount = process.Threads.Count,
+            DatabaseReachable = databaseReachable,
+            DatabaseLatencyMs = dbStopwatch.ElapsedMilliseconds,
+            DatabaseName = _context.Database.GetDbConnection().Database,
+            DatabaseProvider = _context.Database.ProviderName,
+            DatabaseSizeBytes = databaseSizeBytes,
+            PendingMigrations = pendingMigrations,
+            LatestMigration = latestMigration,
+            Render = ReadRenderInfo(),
+            Integrations = new IntegrationStatusDto
+            {
+                Tmdb = !string.IsNullOrWhiteSpace(_configuration["Tmdb:BearerToken"])
+                       || !string.IsNullOrWhiteSpace(_configuration["Tmdb:ApiKey"]),
+                Igdb = !string.IsNullOrWhiteSpace(_configuration["Igdb:ClientId"])
+                       && !string.IsNullOrWhiteSpace(_configuration["Igdb:ClientSecret"]),
+                Brevo = !string.IsNullOrWhiteSpace(_configuration["Brevo:ApiKey"])
+                        && !string.IsNullOrWhiteSpace(_configuration["Brevo:SenderEmail"]),
+                AniList = true,
+            },
+        };
+    }
+
+    private static DateTime TryGetStartTime(Process process)
+    {
+        try
+        {
+            return process.StartTime.ToUniversalTime();
+        }
+        catch
+        {
+            return DateTime.UtcNow;
+        }
+    }
+
+    private static RenderInfoDto? ReadRenderInfo()
+    {
+        static string? Env(string name) => Environment.GetEnvironmentVariable(name);
+
+        var serviceName = Env("RENDER_SERVICE_NAME");
+        if (string.IsNullOrWhiteSpace(serviceName) && string.IsNullOrWhiteSpace(Env("RENDER")))
+        {
+            return null;
+        }
+
+        return new RenderInfoDto
+        {
+            ServiceName = serviceName,
+            ServiceId = Env("RENDER_SERVICE_ID"),
+            InstanceId = Env("RENDER_INSTANCE_ID"),
+            Region = Env("RENDER_REGION"),
+            Commit = ShortSha(Env("RENDER_GIT_COMMIT")),
+            Branch = Env("RENDER_GIT_BRANCH"),
+            Repo = Env("RENDER_GIT_REPO_SLUG"),
+            ExternalHostname = Env("RENDER_EXTERNAL_HOSTNAME"),
+        };
+    }
+
+    private static string? ShortSha(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return value.Length <= 7 ? value : value[..7];
+    }
+
+    // ==========================================
+    // BOOTSTRAP
+    // ==========================================
 
     /// <summary>
     /// Bootstrap initial admin. Can only be invoked when zero admins exist in the database.
@@ -62,6 +250,7 @@ public class AdminController : ControllerBase
         {
             user.Roles.Add("Admin");
             await _context.SaveChangesAsync(ct);
+            _logger.LogWarning("Bootstrap granted Admin role to user {UserId}.", user.Id);
         }
 
         return Ok(new MessageResponseDto($"User '{user.Username}' has been granted the Admin role. Please log in again to refresh your JWT token with admin claims."));
@@ -90,12 +279,16 @@ public class AdminController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 100) pageSize = 20;
 
+        var now = DateTime.UtcNow;
         var query = _context.Users.AsNoTracking();
 
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim();
-            query = query.Where(u => EF.Functions.ILike(u.Username, $"%{s}%") || EF.Functions.ILike(u.Email, $"%{s}%"));
+            query = query.Where(u =>
+                EF.Functions.ILike(u.Username, $"%{s}%")
+                || EF.Functions.ILike(u.Email, $"%{s}%")
+                || (u.KueId != null && EF.Functions.ILike(u.KueId, $"%{s}%")));
         }
 
         if (!string.IsNullOrWhiteSpace(role))
@@ -115,21 +308,7 @@ public class AdminController : ControllerBase
             .OrderByDescending(u => u.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(u => new AdminUserDto
-            {
-                Id = u.Id,
-                Username = u.Username,
-                Email = u.Email,
-                Bio = u.Bio,
-                IsPrivate = u.IsPrivate,
-                IsBanned = u.IsBanned,
-                BanReason = u.BanReason,
-                BannedAt = u.BannedAt,
-                Roles = u.Roles,
-                CreatedAt = u.CreatedAt,
-                LibraryCount = u.LibraryEntries.Count,
-                ListsCount = u.CustomLists.Count
-            })
+            .Select(UserProjection(now))
             .ToListAsync(ct);
 
         return Ok(new PagedResponseDto<AdminUserDto>
@@ -143,32 +322,20 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
-    /// Get details of a specific user by ID.
+    /// Full detail for one user, including counts and recent activity.
     /// </summary>
     [HttpGet("users/{id:int}")]
     [Authorize(Roles = "Admin,admin")]
-    [ProducesResponseType(typeof(AdminUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(AdminUserDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetUserById(int id, CancellationToken ct)
     {
+        var now = DateTime.UtcNow;
+
         var user = await _context.Users
             .AsNoTracking()
             .Where(u => u.Id == id)
-            .Select(u => new AdminUserDto
-            {
-                Id = u.Id,
-                Username = u.Username,
-                Email = u.Email,
-                Bio = u.Bio,
-                IsPrivate = u.IsPrivate,
-                IsBanned = u.IsBanned,
-                BanReason = u.BanReason,
-                BannedAt = u.BannedAt,
-                Roles = u.Roles,
-                CreatedAt = u.CreatedAt,
-                LibraryCount = u.LibraryEntries.Count,
-                ListsCount = u.CustomLists.Count
-            })
+            .Select(UserProjection(now))
             .FirstOrDefaultAsync(ct);
 
         if (user is null)
@@ -176,7 +343,33 @@ public class AdminController : ControllerBase
             return NotFound(new MessageResponseDto($"User with ID {id} not found."));
         }
 
-        return Ok(user);
+        var recentActivity = await _context.UserActivities
+            .AsNoTracking()
+            .Where(a => a.UserId == id)
+            .OrderByDescending(a => a.CreatedAt)
+            .Take(10)
+            .Select(a => new AdminUserActivityDto
+            {
+                Id = a.Id,
+                ActivityType = a.ActivityType,
+                Action = a.Action,
+                DetailText = a.DetailText,
+                FormattedText = a.FormattedText,
+                Status = a.Status,
+                Progress = a.Progress,
+                Rating = a.Rating,
+                MediaId = a.MediaId,
+                MediaTitle = a.Media != null ? a.Media.Title : null,
+                MediaType = a.Media != null ? a.Media.MediaType : null,
+                CreatedAt = a.CreatedAt,
+            })
+            .ToListAsync(ct);
+
+        return Ok(new AdminUserDetailDto
+        {
+            User = user,
+            RecentActivity = recentActivity,
+        });
     }
 
     /// <summary>
@@ -196,10 +389,7 @@ public class AdminController : ControllerBase
             return BadRequest(new MessageResponseDto("At least one role must be specified."));
         }
 
-        var user = await _context.Users
-            .Include(u => u.LibraryEntries)
-            .Include(u => u.CustomLists)
-            .FirstOrDefaultAsync(u => u.Id == id, ct);
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
 
         if (user is null)
         {
@@ -215,8 +405,17 @@ public class AdminController : ControllerBase
 
         user.Roles = request.Roles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         await _context.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Admin {AdminId} changed roles for user {UserId} to {Roles}.",
+            currentUserId, user.Id, string.Join(",", user.Roles));
 
-        return Ok(MapToAdminUserDto(user));
+        var updated = await _context.Users
+            .AsNoTracking()
+            .Where(u => u.Id == id)
+            .Select(UserProjection(DateTime.UtcNow))
+            .FirstAsync(ct);
+
+        return Ok(updated);
     }
 
     /// <summary>
@@ -236,10 +435,7 @@ public class AdminController : ControllerBase
             return BadRequest(new MessageResponseDto("You cannot ban your own account."));
         }
 
-        var user = await _context.Users
-            .Include(u => u.LibraryEntries)
-            .Include(u => u.CustomLists)
-            .FirstOrDefaultAsync(u => u.Id == id, ct);
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
 
         if (user is null)
         {
@@ -269,8 +465,17 @@ public class AdminController : ControllerBase
         }
 
         await _context.SaveChangesAsync(ct);
+        _logger.LogWarning(
+            "Admin {AdminId} set ban state {IsBanned} for user {UserId}.",
+            currentUserId, request.IsBanned, user.Id);
 
-        return Ok(MapToAdminUserDto(user));
+        var updated = await _context.Users
+            .AsNoTracking()
+            .Where(u => u.Id == id)
+            .Select(UserProjection(DateTime.UtcNow))
+            .FirstAsync(ct);
+
+        return Ok(updated);
     }
 
     /// <summary>
@@ -298,6 +503,7 @@ public class AdminController : ControllerBase
 
         _context.Users.Remove(user);
         await _context.SaveChangesAsync(ct);
+        _logger.LogWarning("Admin {AdminId} deleted user {UserId}.", currentUserId, user.Id);
 
         return Ok(new MessageResponseDto($"User '{user.Username}' and associated data were permanently deleted."));
     }
@@ -352,26 +558,27 @@ public class AdminController : ControllerBase
             .OrderByDescending(m => m.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(m => new AdminMediaDto
-            {
-                Id = m.Id,
-                Title = m.Title,
-                MediaType = m.MediaType,
-                ExternalSource = m.ExternalSource,
-                ExternalId = m.ExternalId,
-                CoverImage = m.CoverImage,
-                Year = m.Year,
-                Score = m.Score,
-                TotalUnits = m.TotalUnits,
-                UnitName = m.UnitName,
-                RuntimeMinutes = m.RuntimeMinutes,
-                Platforms = m.Platforms,
-                IsDeleted = m.IsDeleted,
-                CreatedAt = m.CreatedAt,
-                UpdatedAt = m.UpdatedAt,
-                TrackedCount = m.LibraryEntries.Count
-            })
+            .Select(MediaProjection)
             .ToListAsync(ct);
+
+        // The LibraryEntry query filter hides entries whose media is soft-deleted,
+        // so the projection reports 0 for those rows. Count references without the
+        // filter for the admin catalog.
+        if (mediaList.Count > 0)
+        {
+            var mediaIds = mediaList.Select(m => m.Id).ToList();
+            var trackedCounts = await _context.LibraryEntries
+                .IgnoreQueryFilters()
+                .Where(entry => mediaIds.Contains(entry.MediaId))
+                .GroupBy(entry => entry.MediaId)
+                .Select(group => new { MediaId = group.Key, Count = group.Count() })
+                .ToDictionaryAsync(row => row.MediaId, row => row.Count, ct);
+
+            foreach (var media in mediaList)
+            {
+                media.TrackedCount = trackedCounts.GetValueOrDefault(media.Id);
+            }
+        }
 
         return Ok(new PagedResponseDto<AdminMediaDto>
         {
@@ -394,7 +601,7 @@ public class AdminController : ControllerBase
     public async Task<IActionResult> RefreshMediaById(int id, CancellationToken ct)
     {
         var media = await _context.Media
-            .Include(m => m.LibraryEntries)
+            .IgnoreQueryFilters()
             .FirstOrDefaultAsync(m => m.Id == id, ct);
 
         if (media is null)
@@ -435,7 +642,7 @@ public class AdminController : ControllerBase
 
         await _context.SaveChangesAsync(ct);
 
-        return Ok(MapToAdminMediaDto(media));
+        return Ok(await LoadMediaDtoAsync(id, ct));
     }
 
     /// <summary>
@@ -457,8 +664,8 @@ public class AdminController : ControllerBase
                 Status = "planning"
             };
 
-            var media = await _mediaService.GetOrCreateMediaAsync(libraryReq, ct);
-            return Ok(MapToAdminMediaDto(media));
+            var media = await _mediaService.GetOrCreateMediaAsync(libraryReq, ct, requireExternalDetails: true);
+            return Ok(await LoadMediaDtoAsync(media.Id, ct));
         }
         catch (Exception ex)
         {
@@ -487,19 +694,90 @@ public class AdminController : ControllerBase
 
         if (permanent)
         {
+            // Library entries, reviews and custom list items use Restrict on the
+            // media foreign key. Refuse instead of surfacing a database error or
+            // silently destroying user data.
+            var libraryCount = await _context.LibraryEntries
+                .IgnoreQueryFilters()
+                .CountAsync(entry => entry.MediaId == id, ct);
+            var reviewCount = await _context.Reviews
+                .IgnoreQueryFilters()
+                .CountAsync(review => review.MediaId == id, ct);
+            var listItemCount = await _context.CustomListItems
+                .IgnoreQueryFilters()
+                .CountAsync(item => item.MediaId == id, ct);
+
+            if (libraryCount + reviewCount + listItemCount > 0)
+            {
+                return BadRequest(new MessageResponseDto(
+                    $"Cannot permanently delete '{media.Title}' while {libraryCount} library entries, " +
+                    $"{reviewCount} reviews and {listItemCount} custom list items reference it. " +
+                    "Soft-delete it instead."));
+            }
+
             _context.Media.Remove(media);
             await _context.SaveChangesAsync(ct);
+            _logger.LogWarning(
+                "Admin {AdminId} permanently deleted media {MediaId}.",
+                GetCurrentUserId(), media.Id);
             return Ok(new MessageResponseDto($"Media '{media.Title}' was permanently deleted."));
         }
 
         media.IsDeleted = true;
         media.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Admin {AdminId} soft-deleted media {MediaId}.",
+            GetCurrentUserId(), media.Id);
 
         return Ok(new MessageResponseDto($"Media '{media.Title}' was soft-deleted."));
     }
 
+    /// <summary>
+    /// Restore a previously soft-deleted media record.
+    /// </summary>
+    [HttpPut("media/{id:int}/restore")]
+    [Authorize(Roles = "Admin,admin")]
+    [ProducesResponseType(typeof(AdminMediaDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RestoreMedia(int id, CancellationToken ct)
+    {
+        var media = await _context.Media
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(m => m.Id == id, ct);
+
+        if (media is null)
+        {
+            return NotFound(new MessageResponseDto($"Media with ID {id} not found."));
+        }
+
+        if (!media.IsDeleted)
+        {
+            return BadRequest(new MessageResponseDto($"Media '{media.Title}' is not deleted."));
+        }
+
+        media.IsDeleted = false;
+        media.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Admin {AdminId} restored media {MediaId}.",
+            GetCurrentUserId(), media.Id);
+
+        return Ok(await LoadMediaDtoAsync(id, ct));
+    }
+
     // --- Private Helpers ---
+
+    private async Task<AdminMediaDto> LoadMediaDtoAsync(int id, CancellationToken ct)
+    {
+        return await _context.Media
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(m => m.Id == id)
+            .Select(MediaProjection)
+            .FirstAsync(ct);
+    }
 
     private int? GetCurrentUserId()
     {
@@ -507,45 +785,57 @@ public class AdminController : ControllerBase
         return int.TryParse(idClaim, out var id) ? id : null;
     }
 
-    private static AdminUserDto MapToAdminUserDto(User user)
+    private static Expression<Func<User, AdminUserDto>> UserProjection(DateTime now)
     {
-        return new AdminUserDto
+        return u => new AdminUserDto
         {
-            Id = user.Id,
-            Username = user.Username,
-            Email = user.Email,
-            Bio = user.Bio,
-            IsPrivate = user.IsPrivate,
-            IsBanned = user.IsBanned,
-            BanReason = user.BanReason,
-            BannedAt = user.BannedAt,
-            Roles = user.Roles,
-            CreatedAt = user.CreatedAt,
-            LibraryCount = user.LibraryEntries?.Count ?? 0,
-            ListsCount = user.CustomLists?.Count ?? 0
+            Id = u.Id,
+            Username = u.Username,
+            Email = u.Email,
+            KueId = u.KueId,
+            AvatarId = u.AvatarId,
+            Bio = u.Bio,
+            IsPrivate = u.IsPrivate,
+            IsBanned = u.IsBanned,
+            BanReason = u.BanReason,
+            BannedAt = u.BannedAt,
+            Roles = u.Roles,
+            CreatedAt = u.CreatedAt,
+            IsTermsAccepted = u.IsTermsAccepted,
+            TermsAcceptedAt = u.TermsAcceptedAt,
+            TermsVersion = u.TermsVersion,
+            GameBalance = u.GameBalance,
+            GameTotalEarned = u.GameTotalEarned,
+            LibraryCount = u.LibraryEntries.Count,
+            ListsCount = u.CustomLists.Count,
+            ReviewsCount = u.Reviews.Count,
+            FriendsCount = u.SentFriendRequests.Count(f => f.Status == "accepted")
+                           + u.ReceivedFriendRequests.Count(f => f.Status == "accepted"),
+            ActivitiesCount = u.Activities.Count,
+            NotificationsCount = u.Notifications.Count,
+            ActiveSessions = u.RefreshTokens.Count(r => !r.IsRevoked && r.RevokedAtUtc == null && r.ExpiresAt > now),
+            LastActivityAt = u.Activities.Max(a => (DateTime?)a.CreatedAt),
         };
     }
 
-    private static AdminMediaDto MapToAdminMediaDto(Entities.Media media)
-    {
-        return new AdminMediaDto
+    private static readonly Expression<Func<Entities.Media, AdminMediaDto>> MediaProjection =
+        m => new AdminMediaDto
         {
-            Id = media.Id,
-            Title = media.Title,
-            MediaType = media.MediaType,
-            ExternalSource = media.ExternalSource,
-            ExternalId = media.ExternalId,
-            CoverImage = media.CoverImage,
-            Year = media.Year,
-            Score = media.Score,
-            TotalUnits = media.TotalUnits,
-            UnitName = media.UnitName,
-            RuntimeMinutes = media.RuntimeMinutes,
-            Platforms = media.Platforms,
-            IsDeleted = media.IsDeleted,
-            CreatedAt = media.CreatedAt,
-            UpdatedAt = media.UpdatedAt,
-            TrackedCount = media.LibraryEntries?.Count ?? 0
+            Id = m.Id,
+            Title = m.Title,
+            MediaType = m.MediaType,
+            ExternalSource = m.ExternalSource,
+            ExternalId = m.ExternalId,
+            CoverImage = m.CoverImage,
+            Year = m.Year,
+            Score = m.Score,
+            TotalUnits = m.TotalUnits,
+            UnitName = m.UnitName,
+            RuntimeMinutes = m.RuntimeMinutes,
+            Platforms = m.Platforms,
+            IsDeleted = m.IsDeleted,
+            CreatedAt = m.CreatedAt,
+            UpdatedAt = m.UpdatedAt,
+            TrackedCount = m.LibraryEntries.Count,
         };
-    }
 }
