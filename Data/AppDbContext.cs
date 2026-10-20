@@ -129,9 +129,13 @@ public class AppDbContext : DbContext
             entity.HasKey(l => l.Id);
             entity.Property(l => l.Name).HasMaxLength(150).IsRequired();
             entity.Property(l => l.Description).HasMaxLength(1000);
+            entity.Property(l => l.Visibility)
+                  .HasMaxLength(16)
+                  .IsRequired()
+                  .HasDefaultValue(CustomListVisibility.Public);
 
             entity.HasIndex(l => l.UserId);
-            entity.HasIndex(l => l.IsPublic);
+            entity.HasIndex(l => l.Visibility);
             entity.HasIndex(l => l.CreatedAt);
 
             entity.HasOne(l => l.User)

@@ -52,7 +52,7 @@ public class ListsController : ControllerBase
 
         var query = _context.CustomLists
             .AsNoTracking()
-            .Where(l => l.IsPublic);
+            .Where(l => l.Visibility == CustomListVisibility.Public);
 
         if (userId.HasValue)
         {
@@ -78,7 +78,8 @@ public class ListsController : ControllerBase
                 Username = l.User.Username,
                 Name = l.Name,
                 Description = l.Description,
-                IsPublic = l.IsPublic,
+                Visibility = l.Visibility,
+                IsPublic = l.Visibility == CustomListVisibility.Public,
                 ItemCount = l.Items.Count(),
                 PreviewCoverImages = l.Items
                     .OrderBy(i => i.Order)
@@ -136,7 +137,8 @@ public class ListsController : ControllerBase
                 Username = l.User.Username,
                 Name = l.Name,
                 Description = l.Description,
-                IsPublic = l.IsPublic,
+                Visibility = l.Visibility,
+                IsPublic = l.Visibility == CustomListVisibility.Public,
                 ItemCount = l.Items.Count(),
                 PreviewCoverImages = l.Items
                     .OrderBy(i => i.Order)
@@ -175,12 +177,17 @@ public class ListsController : ControllerBase
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == currentUserId.Value, ct);
         if (user is null) return Unauthorized();
 
+        if (!TryResolveVisibility(request.Visibility, request.IsPublic, CustomListVisibility.Public, out var visibility))
+        {
+            return BadRequest(new MessageResponseDto("Visibility must be one of: public, friends, private."));
+        }
+
         var list = new CustomList
         {
             UserId = currentUserId.Value,
             Name = request.Name.Trim(),
             Description = request.Description?.Trim(),
-            IsPublic = request.IsPublic,
+            Visibility = visibility,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -194,7 +201,8 @@ public class ListsController : ControllerBase
             Username = user.Username,
             Name = list.Name,
             Description = list.Description,
-            IsPublic = list.IsPublic,
+            Visibility = list.Visibility,
+            IsPublic = list.Visibility == CustomListVisibility.Public,
             ItemCount = 0,
             PreviewCoverImages = [],
             CreatedAt = list.CreatedAt,
@@ -227,38 +235,42 @@ public class ListsController : ControllerBase
             return NotFound(new MessageResponseDto($"List with ID {listId} not found."));
         }
 
-        if (!list.IsPublic && list.UserId != currentUserId)
+        if (!await CanViewListAsync(list, currentUserId, ct))
         {
             return NotFound(new MessageResponseDto($"List with ID {listId} not found."));
         }
 
-        var itemsDto = list.Items
-            .OrderBy(i => i.Order)
-            .Select(MapItemToDto)
-            .ToList();
+        return Ok(BuildListDetailDto(list));
+    }
 
-        var previewImages = itemsDto
-            .Where(i => i.Media.CoverImage != null)
-            .Select(i => i.Media.CoverImage!)
-            .Take(4)
-            .ToList();
+    /// <summary>
+    /// Get one of the current user's own lists, whatever its visibility.
+    /// Authenticated (unlike the public route above) so an expired access
+    /// token yields 401 and the web client can rotate and retry.
+    /// </summary>
+    [HttpGet("me/lists/{listId:int}")]
+    [Authorize]
+    [ProducesResponseType(typeof(CustomListDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetMyListById(int listId, CancellationToken ct)
+    {
+        var currentUserId = GetCurrentUserId();
+        if (currentUserId is null) return Unauthorized();
 
-        var dto = new CustomListDetailDto
+        var list = await _context.CustomLists
+            .AsNoTracking()
+            .Include(l => l.User)
+            .Include(l => l.Items.OrderBy(i => i.Order))
+                .ThenInclude(i => i.Media)
+            .FirstOrDefaultAsync(l => l.Id == listId, ct);
+
+        if (list is null || list.UserId != currentUserId.Value)
         {
-            Id = list.Id,
-            UserId = list.UserId,
-            Username = list.User.Username,
-            Name = list.Name,
-            Description = list.Description,
-            IsPublic = list.IsPublic,
-            ItemCount = itemsDto.Count,
-            PreviewCoverImages = previewImages,
-            CreatedAt = list.CreatedAt,
-            UpdatedAt = list.UpdatedAt,
-            Items = itemsDto
-        };
+            return NotFound(new MessageResponseDto($"List with ID {listId} not found."));
+        }
 
-        return Ok(dto);
+        return Ok(BuildListDetailDto(list));
     }
 
     /// <summary>
@@ -292,9 +304,14 @@ public class ListsController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("You can only edit your own lists."));
         }
 
+        if (!TryResolveVisibility(request.Visibility, request.IsPublic, list.Visibility, out var visibility))
+        {
+            return BadRequest(new MessageResponseDto("Visibility must be one of: public, friends, private."));
+        }
+
         list.Name = request.Name.Trim();
         list.Description = request.Description?.Trim();
-        list.IsPublic = request.IsPublic;
+        list.Visibility = visibility;
         list.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(ct);
@@ -313,7 +330,8 @@ public class ListsController : ControllerBase
             Username = list.User.Username,
             Name = list.Name,
             Description = list.Description,
-            IsPublic = list.IsPublic,
+            Visibility = list.Visibility,
+            IsPublic = list.Visibility == CustomListVisibility.Public,
             ItemCount = list.Items.Count,
             PreviewCoverImages = previewImages,
             CreatedAt = list.CreatedAt,
@@ -375,7 +393,7 @@ public class ListsController : ControllerBase
             return NotFound(new MessageResponseDto($"List with ID {listId} not found."));
         }
 
-        if (!list.IsPublic && list.UserId != currentUserId)
+        if (!await CanViewListAsync(list, currentUserId, ct))
         {
             return NotFound(new MessageResponseDto($"List with ID {listId} not found."));
         }
@@ -666,6 +684,77 @@ public class ListsController : ControllerBase
     {
         var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
         return int.TryParse(idClaim, out var id) ? id : null;
+    }
+
+    private static bool TryResolveVisibility(
+        string? visibility,
+        bool? legacyIsPublic,
+        string fallback,
+        out string resolved)
+    {
+        if (!string.IsNullOrWhiteSpace(visibility))
+        {
+            resolved = visibility.Trim().ToLowerInvariant();
+            return CustomListVisibility.IsValid(resolved);
+        }
+
+        if (legacyIsPublic.HasValue)
+        {
+            resolved = legacyIsPublic.Value
+                ? CustomListVisibility.Public
+                : CustomListVisibility.Private;
+            return true;
+        }
+
+        resolved = fallback;
+        return true;
+    }
+
+    // "friends" lists are readable by the owner and their accepted friends.
+    // Unknown or hidden lists answer 404 so their existence never leaks.
+    private async Task<bool> CanViewListAsync(
+        CustomList list,
+        int? currentUserId,
+        CancellationToken ct)
+    {
+        if (currentUserId.HasValue && list.UserId == currentUserId.Value) return true;
+        if (list.Visibility == CustomListVisibility.Public) return true;
+        if (list.Visibility != CustomListVisibility.Friends || !currentUserId.HasValue) return false;
+
+        var viewerId = currentUserId.Value;
+        return await _context.Friendships
+            .AsNoTracking()
+            .AnyAsync(f => f.Status == "accepted" &&
+                ((f.RequesterId == viewerId && f.AddresseeId == list.UserId) ||
+                 (f.RequesterId == list.UserId && f.AddresseeId == viewerId)), ct);
+    }
+
+    private static CustomListDetailDto BuildListDetailDto(CustomList list)
+    {
+        var itemsDto = list.Items
+            .OrderBy(i => i.Order)
+            .Select(MapItemToDto)
+            .ToList();
+
+        return new CustomListDetailDto
+        {
+            Id = list.Id,
+            UserId = list.UserId,
+            Username = list.User.Username,
+            Name = list.Name,
+            Description = list.Description,
+            Visibility = list.Visibility,
+            IsPublic = list.Visibility == CustomListVisibility.Public,
+            ItemCount = itemsDto.Count,
+            PreviewCoverImages = itemsDto
+                .Where(i => i.Media.CoverImage != null)
+                .Select(i => i.Media.CoverImage!)
+                .Take(4)
+                .ToList(),
+            CreatedAt = list.CreatedAt,
+            UpdatedAt = list.UpdatedAt,
+            Items = itemsDto
+        };
     }
 
     private static CustomListItemDto MapItemToDto(CustomListItem item)

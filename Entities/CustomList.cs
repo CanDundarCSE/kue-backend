@@ -9,7 +9,12 @@ public class CustomList
 
     public string Name { get; set; } = null!;
     public string? Description { get; set; }
-    public bool IsPublic { get; set; } = true;
+
+    /// <summary>
+    /// One of <see cref="CustomListVisibility"/> ("public", "friends", "private").
+    /// Replaces the old boolean IsPublic column.
+    /// </summary>
+    public string Visibility { get; set; } = CustomListVisibility.Public;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }

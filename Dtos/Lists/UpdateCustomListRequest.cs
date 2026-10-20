@@ -11,5 +11,14 @@ public class UpdateCustomListRequest
     [StringLength(1000, ErrorMessage = "Description cannot exceed 1000 characters.")]
     public string? Description { get; set; }
 
-    public bool IsPublic { get; set; } = true;
+    /// <summary>
+    /// "public", "friends" or "private". Omit to keep the current visibility.
+    /// </summary>
+    public string? Visibility { get; set; }
+
+    /// <summary>
+    /// Legacy visibility flag. Ignored when <see cref="Visibility"/> is set;
+    /// kept so older clients keep working.
+    /// </summary>
+    public bool? IsPublic { get; set; }
 }

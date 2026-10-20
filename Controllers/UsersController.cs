@@ -132,7 +132,14 @@ public class UsersController : ControllerBase
         var ratingsCount = await libraryQuery.CountAsync(e => e.Rating != null, ct);
 
         // Only count public lists unless self
-        var listsCount = await _context.CustomLists.CountAsync(l => l.UserId == user.Id && (isSelf || l.IsPublic), ct);
+        // Count the lists this viewer could actually open: everything for the
+        // owner, public lists for everyone else, plus friends-only lists for
+        // accepted friends.
+        var listsCount = await _context.CustomLists.CountAsync(l =>
+            l.UserId == user.Id &&
+            (isSelf ||
+             l.Visibility == CustomListVisibility.Public ||
+             (isMutualFriend && l.Visibility == CustomListVisibility.Friends)), ct);
 
         dto.Counts = new UserProfileCountsDto
         {
@@ -256,10 +263,14 @@ public class UsersController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 50) pageSize = 20;
 
-        // Even for mutual friends, only return isPublic: true lists! Only the user themselves can view their private lists.
+        // Private lists stay owner-only. Friends-only lists are included for
+        // accepted friends; everyone else only sees public lists.
         var query = _context.CustomLists
             .AsNoTracking()
-            .Where(l => l.UserId == user.Id && (isSelf || l.IsPublic));
+            .Where(l => l.UserId == user.Id &&
+                (isSelf ||
+                 l.Visibility == CustomListVisibility.Public ||
+                 (isMutualFriend && l.Visibility == CustomListVisibility.Friends)));
 
         var totalCount = await query.CountAsync(ct);
 
@@ -274,7 +285,8 @@ public class UsersController : ControllerBase
                 Username = user.Username,
                 Name = l.Name,
                 Description = l.Description,
-                IsPublic = l.IsPublic,
+                Visibility = l.Visibility,
+                IsPublic = l.Visibility == CustomListVisibility.Public,
                 ItemCount = l.Items.Count(),
                 PreviewCoverImages = l.Items
                     .OrderBy(i => i.Order)
