@@ -34,6 +34,10 @@ builder.Services.AddHostedService<Kue.Api.Services.Import.ImportRecoveryService>
 builder.Services.AddScoped<Kue.Api.Services.Notifications.INotificationService, Kue.Api.Services.Notifications.NotificationService>();
 builder.Services.AddScoped<Kue.Api.Services.Activity.IActivityService, Kue.Api.Services.Activity.ActivityService>();
 builder.Services.AddScoped<Kue.Api.Services.Reviews.IReviewService, Kue.Api.Services.Reviews.ReviewService>();
+builder.Services.AddScoped<Kue.Api.Services.Playback.IAddonCredentialService, Kue.Api.Services.Playback.AddonCredentialService>();
+builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackMediaResolver, Kue.Api.Services.Playback.PlaybackMediaResolver>();
+builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackCandidateService, Kue.Api.Services.Playback.PlaybackCandidateService>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddBackgroundTaskQueue();
 builder.Services.AddHostedService<TokenCleanupBackgroundService>();
 builder.Services.AddBrevoEmail(builder.Configuration);
@@ -89,6 +93,19 @@ builder.Services.AddRateLimiter(options =>
                 Window      = TimeSpan.FromMinutes(1),
                 QueueLimit  = 0
             }));
+
+    // The addon URL is a bearer credential, so its public surface needs its own
+    // ceiling. 120 requests/minute comfortably covers a client's subtitle
+    // fetches while bounding token-guessing and abuse from one address.
+    options.AddPolicy("addon", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 120,
+                Window      = TimeSpan.FromMinutes(1),
+                QueueLimit  = 0
+            }));
 });
 
 // ---------------------------------------------------------------------
@@ -125,3 +142,6 @@ app.MapControllers();
 app.MapHub<Kue.Api.Hubs.NotificationHub>("/hubs/notifications");
 
 app.Run();
+
+// Exposed for integration tests (WebApplicationFactory).
+public partial class Program;

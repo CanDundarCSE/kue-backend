@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -121,6 +122,68 @@ public class ExternalMediaService : IExternalMediaService
         }
 
         return null;
+    }
+
+    public async Task<string?> FindTmdbIdByImdbIdAsync(string imdbId, string mediaType, CancellationToken ct = default)
+    {
+        var normalizedType = NormalizeMediaType(mediaType) ?? "movie";
+        var cacheKey = $"tmdb:imdb:{normalizedType}:{imdbId}";
+
+        // Empty string is the cached "known unmapped" sentinel: negative
+        // results are cached briefly so a bad id cannot hammer TMDB.
+        if (_memoryCache.TryGetValue<string>(cacheKey, out var cached))
+        {
+            return string.IsNullOrEmpty(cached) ? null : cached;
+        }
+
+        using var request = CreateTmdbRequest(
+            HttpMethod.Get,
+            $"/find/{Uri.EscapeDataString(imdbId)}?external_source=imdb_id");
+
+        if (request is null) return null;
+
+        string? mapped = null;
+        try
+        {
+            var response = await _httpClient.SendAsync(request, ct);
+            if (response.IsSuccessStatusCode)
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+                var resultProperty = normalizedType == "series" ? "tv_results" : "movie_results";
+                if (document.RootElement.TryGetProperty(resultProperty, out var results)
+                    && results.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in results.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("id", out var idElement)
+                            && idElement.ValueKind == JsonValueKind.Number)
+                        {
+                            mapped = idElement.GetInt32().ToString(CultureInfo.InvariantCulture);
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                _logger.LogDebug("TMDB find returned {Status} for {ImdbId}", (int)response.StatusCode, imdbId);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Transient failure: do not cache, the next request may succeed.
+            _logger.LogWarning(ex, "TMDB find failed for {ImdbId}", imdbId);
+            return null;
+        }
+
+        _memoryCache.Set(
+            cacheKey,
+            mapped ?? string.Empty,
+            mapped is null ? TimeSpan.FromMinutes(10) : TimeSpan.FromHours(24));
+
+        return mapped;
     }
 
     public async Task<PagedResponseDto<MediaDto>> GetTrendingAsync(string? mediaType = null, int page = 1, int pageSize = 20, CancellationToken ct = default)

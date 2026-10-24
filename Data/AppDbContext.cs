@@ -20,6 +20,8 @@ public class AppDbContext : DbContext
     public DbSet<ImportJob> ImportJobs => Set<ImportJob>();
     public DbSet<ImportItem> ImportItems => Set<ImportItem>();
     public DbSet<MiniGameScore> MiniGameScores => Set<MiniGameScore>();
+    public DbSet<AddonCredential> AddonCredentials => Set<AddonCredential>();
+    public DbSet<PlaybackCandidate> PlaybackCandidates => Set<PlaybackCandidate>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -303,6 +305,55 @@ public class AppDbContext : DbContext
                   .WithMany(j => j.Items)
                   .HasForeignKey(i => i.JobId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AddonCredential>(entity =>
+        {
+            entity.HasKey(c => c.Id);
+            entity.HasIndex(c => c.TokenHash).IsUnique();
+            entity.HasIndex(c => new { c.UserId, c.RevokedAt });
+
+            entity.Property(c => c.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(c => c.RevokedReason).HasMaxLength(50);
+
+            entity.HasOne(c => c.User)
+                  .WithMany()
+                  .HasForeignKey(c => c.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PlaybackCandidate>(entity =>
+        {
+            entity.HasKey(c => c.Id);
+            entity.HasIndex(c => new { c.UserId, c.Status, c.LastSeenAt });
+            entity.HasIndex(c => new
+            {
+                c.UserId,
+                c.MediaType,
+                c.ExternalSource,
+                c.ExternalId,
+                c.Season,
+                c.Episode,
+                c.LastSeenAt
+            });
+
+            entity.Property(c => c.MediaType).HasMaxLength(20).IsRequired();
+            entity.Property(c => c.ExternalSource).HasMaxLength(10).IsRequired();
+            entity.Property(c => c.ExternalId).HasMaxLength(64).IsRequired();
+            entity.Property(c => c.ResolvedExternalId).HasMaxLength(64);
+            entity.Property(c => c.Status).HasMaxLength(20).IsRequired();
+
+            entity.HasOne(c => c.User)
+                  .WithMany()
+                  .HasForeignKey(c => c.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // A candidate is evidence, not history: deleting the resolved media
+            // must not cascade away the user's record of what was observed.
+            entity.HasOne(c => c.Media)
+                  .WithMany()
+                  .HasForeignKey(c => c.MediaId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<MiniGameScore>(entity =>
