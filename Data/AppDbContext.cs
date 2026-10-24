@@ -1,5 +1,7 @@
 using Kue.Api.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using System.Text.Json;
 
 namespace Kue.Api.Data;
 
@@ -21,7 +23,6 @@ public class AppDbContext : DbContext
     public DbSet<ImportItem> ImportItems => Set<ImportItem>();
     public DbSet<MiniGameScore> MiniGameScores => Set<MiniGameScore>();
     public DbSet<AddonCredential> AddonCredentials => Set<AddonCredential>();
-    public DbSet<PlaybackCandidate> PlaybackCandidates => Set<PlaybackCandidate>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -86,6 +87,26 @@ public class AppDbContext : DbContext
             entity.Property(m => m.OriginalTitle).HasMaxLength(300);
             entity.Property(m => m.UnitName).HasMaxLength(50);
             entity.Property(m => m.Developer).HasMaxLength(150);
+
+            // Dictionary<int,int> is not a native PostgreSQL type. Store it as
+            // jsonb so season episode counts can be extended without a schema
+            // change per season. Null means "TMDB did not provide metadata".
+            entity.Property(m => m.SeasonEpisodeCounts)
+                  .HasConversion(
+                      v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                      v => JsonSerializer.Deserialize<Dictionary<int, int>>(v, (JsonSerializerOptions?)null)!)
+                  .HasColumnType("jsonb");
+
+            // Dictionaries are mutable reference types; without a comparer EF
+            // would treat every loaded value as changed.
+            var seasonCountsComparer = new ValueComparer<Dictionary<int, int>>(
+                (left, right) => SeasonCountsEqual(left, right),
+                value => value == null
+                    ? 0
+                    : value.Aggregate(0, (hash, pair) => HashCode.Combine(hash, pair.Key, pair.Value)),
+                value => value == null ? null! : new Dictionary<int, int>(value));
+            entity.Property(m => m.SeasonEpisodeCounts)
+                  .Metadata.SetValueComparer(seasonCountsComparer);
 
             // Soft delete global filter
             entity.HasQueryFilter(m => !m.IsDeleted);
@@ -322,40 +343,6 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
-        modelBuilder.Entity<PlaybackCandidate>(entity =>
-        {
-            entity.HasKey(c => c.Id);
-            entity.HasIndex(c => new { c.UserId, c.Status, c.LastSeenAt });
-            entity.HasIndex(c => new
-            {
-                c.UserId,
-                c.MediaType,
-                c.ExternalSource,
-                c.ExternalId,
-                c.Season,
-                c.Episode,
-                c.LastSeenAt
-            });
-
-            entity.Property(c => c.MediaType).HasMaxLength(20).IsRequired();
-            entity.Property(c => c.ExternalSource).HasMaxLength(10).IsRequired();
-            entity.Property(c => c.ExternalId).HasMaxLength(64).IsRequired();
-            entity.Property(c => c.ResolvedExternalId).HasMaxLength(64);
-            entity.Property(c => c.Status).HasMaxLength(20).IsRequired();
-
-            entity.HasOne(c => c.User)
-                  .WithMany()
-                  .HasForeignKey(c => c.UserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            // A candidate is evidence, not history: deleting the resolved media
-            // must not cascade away the user's record of what was observed.
-            entity.HasOne(c => c.Media)
-                  .WithMany()
-                  .HasForeignKey(c => c.MediaId)
-                  .OnDelete(DeleteBehavior.SetNull);
-        });
-
         modelBuilder.Entity<MiniGameScore>(entity =>
         {
             entity.HasKey(s => s.Id);
@@ -369,5 +356,18 @@ public class AppDbContext : DbContext
                   .HasForeignKey(s => s.UserId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
+    }
+
+    private static bool SeasonCountsEqual(Dictionary<int, int>? left, Dictionary<int, int>? right)
+    {
+        if (left is null) return right is null;
+        if (right is null || left.Count != right.Count) return false;
+
+        foreach (var pair in left)
+        {
+            if (!right.TryGetValue(pair.Key, out var value) || value != pair.Value) return false;
+        }
+
+        return true;
     }
 }

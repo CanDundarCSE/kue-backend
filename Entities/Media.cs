@@ -24,6 +24,12 @@ public class Media
     public int? TotalSeasons { get; set; } // TV Series / multi-season Anime
     public int? TotalVolumes { get; set; } // Manga / Light Novels
 
+    // Episode count per season, keyed by TMDB season number (special season 0
+    // excluded). Used to convert "S2E5" into an absolute episode number because
+    // LibraryEntry stores a single progress integer. Null when TMDB did not
+    // return season metadata; progress is then left unchanged rather than guessed.
+    public Dictionary<int, int>? SeasonEpisodeCounts { get; set; }
+
     // Movie specific
     public int? RuntimeMinutes { get; set; }
 

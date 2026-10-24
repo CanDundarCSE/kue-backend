@@ -36,7 +36,7 @@ builder.Services.AddScoped<Kue.Api.Services.Activity.IActivityService, Kue.Api.S
 builder.Services.AddScoped<Kue.Api.Services.Reviews.IReviewService, Kue.Api.Services.Reviews.ReviewService>();
 builder.Services.AddScoped<Kue.Api.Services.Playback.IAddonCredentialService, Kue.Api.Services.Playback.AddonCredentialService>();
 builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackMediaResolver, Kue.Api.Services.Playback.PlaybackMediaResolver>();
-builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackCandidateService, Kue.Api.Services.Playback.PlaybackCandidateService>();
+builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackTrackingService, Kue.Api.Services.Playback.PlaybackTrackingService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddBackgroundTaskQueue();
 builder.Services.AddHostedService<TokenCleanupBackgroundService>();

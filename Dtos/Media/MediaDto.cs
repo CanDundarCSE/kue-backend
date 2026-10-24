@@ -22,6 +22,7 @@ public class MediaDto
     public string? UnitName { get; set; } // "Episodes" for anime/series, "Chapters" for manga, null for movies & games
     public int? TotalSeasons { get; set; } // For TV Series / multi-season Anime
     public int? TotalVolumes { get; set; } // For Manga / Light Novels
+    public Dictionary<int, int>? SeasonEpisodeCounts { get; set; } // TMDB season number → episode count
 
     // Movie specific
     public int? RuntimeMinutes { get; set; }
@@ -51,6 +52,7 @@ public class MediaDto
             UnitName = media.UnitName,
             TotalSeasons = media.TotalSeasons,
             TotalVolumes = media.TotalVolumes,
+            SeasonEpisodeCounts = media.SeasonEpisodeCounts,
             RuntimeMinutes = media.RuntimeMinutes,
             Platforms = media.Platforms,
             Developer = media.Developer

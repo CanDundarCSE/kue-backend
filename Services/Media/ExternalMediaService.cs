@@ -1557,6 +1557,7 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
         int? totalUnits = null;
         string? unitName = null;
         int? totalSeasons = null;
+        Dictionary<int, int>? seasonEpisodeCounts = null;
 
         if (isSeries)
         {
@@ -1568,6 +1569,34 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
             if (element.TryGetProperty("number_of_seasons", out var se) && se.ValueKind == JsonValueKind.Number)
             {
                 totalSeasons = se.GetInt32();
+            }
+
+            // TMDB returns season 0 for specials. It is deliberately excluded:
+            // Kue's single progress number tracks the main run, and specials
+            // never count toward an absolute episode position.
+            if (element.TryGetProperty("seasons", out var seasons) && seasons.ValueKind == JsonValueKind.Array)
+            {
+                var counts = new Dictionary<int, int>();
+                foreach (var season in seasons.EnumerateArray())
+                {
+                    if (!season.TryGetProperty("season_number", out var sn) || sn.ValueKind != JsonValueKind.Number)
+                    {
+                        continue;
+                    }
+                    if (!season.TryGetProperty("episode_count", out var ec) || ec.ValueKind != JsonValueKind.Number)
+                    {
+                        continue;
+                    }
+
+                    var seasonNumber = sn.GetInt32();
+                    var episodeCount = ec.GetInt32();
+                    if (seasonNumber >= 1 && episodeCount > 0)
+                    {
+                        counts[seasonNumber] = episodeCount;
+                    }
+                }
+
+                if (counts.Count > 0) seasonEpisodeCounts = counts;
             }
         }
 
@@ -1587,6 +1616,7 @@ query ($type: MediaType, $page: Int, $perPage: Int) {
             TotalUnits = totalUnits,
             UnitName = unitName,
             TotalSeasons = totalSeasons,
+            SeasonEpisodeCounts = seasonEpisodeCounts,
             RuntimeMinutes = runtimeMinutes
         };
     }

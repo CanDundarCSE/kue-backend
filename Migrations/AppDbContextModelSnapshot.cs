@@ -431,6 +431,9 @@ namespace Kue.Api.Migrations
                     b.Property<double?>("Score")
                         .HasColumnType("double precision");
 
+                    b.Property<string>("SeasonEpisodeCounts")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Status")
                         .HasColumnType("text");
 
@@ -567,76 +570,6 @@ namespace Kue.Api.Migrations
                     b.HasIndex("UserId", "IsRead");
 
                     b.ToTable("Notifications");
-                });
-
-            modelBuilder.Entity("Kue.Api.Entities.PlaybackCandidate", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime?>("ConfirmedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("DismissedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("Episode")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("ExternalId")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("ExternalSource")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("character varying(10)");
-
-                    b.Property<DateTime>("FirstSeenAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("LastSeenAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("MediaId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("MediaType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<int>("RequestCount")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("ResolvedExternalId")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<int?>("Season")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<int>("UserId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("MediaId");
-
-                    b.HasIndex("UserId", "Status", "LastSeenAt");
-
-                    b.HasIndex("UserId", "MediaType", "ExternalSource", "ExternalId", "Season", "Episode", "LastSeenAt");
-
-                    b.ToTable("PlaybackCandidates");
                 });
 
             modelBuilder.Entity("Kue.Api.Entities.RefreshToken", b =>
@@ -1048,24 +981,6 @@ namespace Kue.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Actor");
-
-                    b.Navigation("User");
-                });
-
-            modelBuilder.Entity("Kue.Api.Entities.PlaybackCandidate", b =>
-                {
-                    b.HasOne("Kue.Api.Entities.Media", "Media")
-                        .WithMany()
-                        .HasForeignKey("MediaId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("Kue.Api.Entities.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Media");
 
                     b.Navigation("User");
                 });

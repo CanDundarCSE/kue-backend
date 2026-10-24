@@ -75,6 +75,7 @@ public class MediaService : IMediaService
             var unitName = fetchedDto?.UnitName ?? request.UnitName ?? (normalizedType == "manga" ? "Chapters" : (normalizedType is "anime" or "series" ? "Episodes" : null));
             var totalSeasons = fetchedDto?.TotalSeasons;
             var totalVolumes = fetchedDto?.TotalVolumes;
+            var seasonEpisodeCounts = fetchedDto?.SeasonEpisodeCounts;
             var runtimeMinutes = fetchedDto?.RuntimeMinutes ?? request.RuntimeMinutes;
             var platforms = (fetchedDto?.Platforms != null && fetchedDto.Platforms.Count > 0) ? fetchedDto.Platforms : request.Platforms;
             var developer = fetchedDto?.Developer ?? request.Developer;
@@ -95,6 +96,7 @@ public class MediaService : IMediaService
                 UnitName = unitName,
                 TotalSeasons = totalSeasons,
                 TotalVolumes = totalVolumes,
+                SeasonEpisodeCounts = seasonEpisodeCounts,
                 RuntimeMinutes = runtimeMinutes,
                 Platforms = platforms,
                 Developer = developer,
