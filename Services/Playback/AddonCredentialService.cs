@@ -6,13 +6,27 @@ namespace Kue.Api.Services.Playback;
 
 public interface IAddonCredentialService
 {
-    /// <summary>Creates (or rotates) the single active credential and returns the raw token once.</summary>
-    Task<(string RawToken, AddonCredential Credential)> CreateAsync(int userId, CancellationToken ct = default);
+    /// <summary>Active credentials a user may hold at once.</summary>
+    const int MaxActiveCredentials = 10;
+
+    /// <summary>
+    /// Creates an additional credential and returns the raw token once. Existing
+    /// credentials stay valid, so a second device does not disconnect the first.
+    /// Returns null when the per-user cap has been reached.
+    /// </summary>
+    Task<(string RawToken, AddonCredential Credential)?> CreateAsync(
+        int userId,
+        string? label = null,
+        CancellationToken ct = default);
 
     /// <summary>Resolves an active credential by raw token, or null when unknown/revoked.</summary>
     Task<AddonCredential?> ValidateAsync(string rawToken, CancellationToken ct = default);
 
-    Task<AddonCredential?> GetActiveAsync(int userId, CancellationToken ct = default);
+    /// <summary>Every credential that has not been revoked, newest first.</summary>
+    Task<IReadOnlyList<AddonCredential>> ListActiveAsync(int userId, CancellationToken ct = default);
+
+    /// <summary>Revokes one credential owned by the user. False when it does not exist.</summary>
+    Task<bool> RevokeAsync(int userId, int credentialId, CancellationToken ct = default);
 
     /// <summary>Revokes every active credential for the user. Returns true when one existed.</summary>
     Task<bool> RevokeAllAsync(int userId, CancellationToken ct = default);
@@ -39,20 +53,22 @@ public class AddonCredentialService : IAddonCredentialService
         _logger = logger;
     }
 
-    public async Task<(string RawToken, AddonCredential Credential)> CreateAsync(int userId, CancellationToken ct = default)
+    public async Task<(string RawToken, AddonCredential Credential)?> CreateAsync(
+        int userId,
+        string? label = null,
+        CancellationToken ct = default)
     {
         var now = _time.GetUtcNow().UtcDateTime;
 
-        // One active credential per user keeps rotation unambiguous: generating
-        // a new URL invalidates the previous one instead of leaving orphans.
-        var active = await _context.AddonCredentials
-            .Where(c => c.UserId == userId && c.RevokedAt == null)
-            .ToListAsync(ct);
+        // Multiple credentials are allowed on purpose: each device gets its own
+        // URL, and adding one must never disconnect the others. The cap keeps a
+        // single account from minting unbounded tokens.
+        var activeCount = await _context.AddonCredentials
+            .CountAsync(c => c.UserId == userId && c.RevokedAt == null, ct);
 
-        foreach (var old in active)
+        if (activeCount >= IAddonCredentialService.MaxActiveCredentials)
         {
-            old.RevokedAt = now;
-            old.RevokedReason = AddonCredentialRevocationReason.Rotated;
+            return null;
         }
 
         var rawToken = AddonTokenHasher.GenerateToken();
@@ -60,6 +76,7 @@ public class AddonCredentialService : IAddonCredentialService
         {
             UserId = userId,
             TokenHash = AddonTokenHasher.Hash(rawToken),
+            Label = NormalizeLabel(label),
             CreatedAt = now
         };
 
@@ -69,6 +86,14 @@ public class AddonCredentialService : IAddonCredentialService
         _logger.LogInformation("Created addon credential {CredentialId} for user {UserId}", credential.Id, userId);
 
         return (rawToken, credential);
+    }
+
+    private static string? NormalizeLabel(string? label)
+    {
+        var trimmed = label?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+
+        return trimmed.Length <= 40 ? trimmed : trimmed[..40];
     }
 
     public async Task<AddonCredential?> ValidateAsync(string rawToken, CancellationToken ct = default)
@@ -84,13 +109,29 @@ public class AddonCredentialService : IAddonCredentialService
             .FirstOrDefaultAsync(c => c.TokenHash == hash && c.RevokedAt == null, ct);
     }
 
-    public Task<AddonCredential?> GetActiveAsync(int userId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AddonCredential>> ListActiveAsync(int userId, CancellationToken ct = default)
     {
-        return _context.AddonCredentials
+        return await _context.AddonCredentials
             .AsNoTracking()
             .Where(c => c.UserId == userId && c.RevokedAt == null)
             .OrderByDescending(c => c.CreatedAt)
-            .FirstOrDefaultAsync(ct);
+            .ThenByDescending(c => c.Id)
+            .ToListAsync(ct);
+    }
+
+    public async Task<bool> RevokeAsync(int userId, int credentialId, CancellationToken ct = default)
+    {
+        var credential = await _context.AddonCredentials
+            .FirstOrDefaultAsync(
+                c => c.Id == credentialId && c.UserId == userId && c.RevokedAt == null,
+                ct);
+
+        if (credential is null) return false;
+
+        credential.RevokedAt = _time.GetUtcNow().UtcDateTime;
+        credential.RevokedReason = AddonCredentialRevocationReason.RevokedByUser;
+        await _context.SaveChangesAsync(ct);
+        return true;
     }
 
     public async Task<bool> RevokeAllAsync(int userId, CancellationToken ct = default)

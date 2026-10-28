@@ -15,6 +15,9 @@ public class AddonCredential
     /// <summary>SHA-256 hex hash of the raw token (64 chars).</summary>
     public string TokenHash { get; set; } = null!;
 
+    /// <summary>Optional human label so one device can be told from another.</summary>
+    public string? Label { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastUsedAt { get; set; }
     public DateTime? RevokedAt { get; set; }

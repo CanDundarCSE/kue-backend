@@ -335,6 +335,7 @@ public class AppDbContext : DbContext
             entity.HasIndex(c => new { c.UserId, c.RevokedAt });
 
             entity.Property(c => c.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(c => c.Label).HasMaxLength(40);
             entity.Property(c => c.RevokedReason).HasMaxLength(50);
 
             entity.HasOne(c => c.User)
