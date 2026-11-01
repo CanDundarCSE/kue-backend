@@ -5,6 +5,7 @@ using Kue.Api.Dtos.Library;
 using Kue.Api.Dtos.Lists;
 using Kue.Api.Dtos.Media;
 using Kue.Api.Dtos.Ratings;
+using Kue.Api.Dtos.Reviews;
 using Kue.Api.Dtos.Stats;
 using Kue.Api.Dtos.Users;
 using Kue.Api.Entities;
@@ -22,15 +23,18 @@ public class UsersController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly Kue.Api.Services.Activity.IActivityService _activityService;
+    private readonly Kue.Api.Services.Reviews.IReviewService _reviewService;
     private readonly ILogger<UsersController> _logger;
 
     public UsersController(
         AppDbContext context,
         Kue.Api.Services.Activity.IActivityService activityService,
+        Kue.Api.Services.Reviews.IReviewService reviewService,
         ILogger<UsersController> logger)
     {
         _context = context;
         _activityService = activityService;
+        _reviewService = reviewService;
         _logger = logger;
     }
 
@@ -155,6 +159,56 @@ public class UsersController : ControllerBase
         };
 
         return dto;
+    }
+
+    /// <summary>
+    /// Public reviews written by a user. Private accounts are visible to mutual friends only.
+    /// </summary>
+    [HttpGet("{username}/reviews")]
+    [ProducesResponseType(typeof(PagedResponseDto<ReviewDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetUserReviews(
+        string username,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken ct = default)
+    {
+        var normalizedUsername = username.Trim().ToLower();
+        var user = await _context.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Username.ToLower() == normalizedUsername, ct);
+
+        if (user is null)
+        {
+            return NotFound(new MessageResponseDto($"User '{username}' was not found."));
+        }
+
+        var currentUserId = GetCurrentUserId();
+        var (isSelf, isMutualFriend, _) = await GetRelationshipAsync(currentUserId, user.Id, ct);
+
+        if (user.IsPrivate && !isSelf && !isMutualFriend)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new MessageResponseDto("This user's profile is private. You must be mutual friends to view their reviews."));
+        }
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        // Visitors only ever see public reviews; the owner sees everything.
+        var (reviews, totalCount) = await _reviewService.GetUserReviewsAsync(
+            user.Id, page, pageSize, isSelf ? null : true, ct);
+
+        var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        return Ok(new PagedResponseDto<ReviewDto>
+        {
+            Items = reviews,
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = totalCount,
+            TotalPages = totalPages
+        });
     }
 
     /// <summary>
