@@ -19,9 +19,9 @@ public interface IImportService
 
 public class ImportService : IImportService
 {
-    private const int MaxFileChars = 2_000_000;
+    private const int MaxFileChars = 5_000_000;
     private const int MaxFiles = 50;
-    private const int MaxTotalChars = 5_000_000;
+    private const int MaxTotalChars = 25_000_000;
     private static readonly HashSet<string> Formats = new(StringComparer.OrdinalIgnoreCase)
     {
         "mal-xml", "anilist-json", "trakt-json", "csv"
@@ -53,7 +53,7 @@ public class ImportService : IImportService
         }
         if (content.Length > MaxFileChars)
         {
-            throw new InvalidOperationException("Export file is too large (2 MB max).");
+            throw new InvalidOperationException("Export file is too large (5 MB max).");
         }
 
         var format = string.IsNullOrWhiteSpace(request.Source)
@@ -125,12 +125,12 @@ public class ImportService : IImportService
             }
             if (fileContent.Length > MaxFileChars)
             {
-                throw new InvalidOperationException($"'{name}' is too large (2 MB max per file).");
+                throw new InvalidOperationException($"'{name}' is too large (5 MB max per file).");
             }
             total += fileContent.Length;
             if (total > MaxTotalChars)
             {
-                throw new InvalidOperationException("These files are too large in total (5 MB max).");
+                throw new InvalidOperationException("These files are too large in total (25 MB max).");
             }
             payload.Add((name, fileContent));
         }

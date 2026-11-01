@@ -105,8 +105,25 @@ public static class ImportParsing
             "mal-xml" => ParseMalXml(content),
             "anilist-json" => ParseAniListJson(content),
             "trakt-json" => ParseTraktJson(content),
-            _ => ParseCsv(content, columnMapping, defaultType),
+            _ => LooksLikeYamtrackCsv(content)
+                ? ParseYamtrackCsv(content)
+                : ParseCsv(content, columnMapping, defaultType),
         };
+    }
+
+    /// <summary>
+    /// Yamtrack's CSV export carries a fixed header and one row per tracked
+    /// unit (show, season, episode, movie, game...). Detect it so episode
+    /// rows are folded into their show instead of parsed as separate titles.
+    /// </summary>
+    public static bool LooksLikeYamtrackCsv(string content)
+    {
+        var trimmed = content.TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
+        var newline = trimmed.IndexOf('\n');
+        var header = (newline < 0 ? trimmed : trimmed[..newline]).Trim().ToLowerInvariant();
+        return header.Contains("media_id")
+            && header.Contains("media_type")
+            && header.Contains("progressed_at");
     }
 
     // --- MyAnimeList XML ---
@@ -586,6 +603,157 @@ public static class ImportParsing
 
     // --- Generic CSV ---
 
+    // --- Yamtrack CSV export ---
+    //
+    // One row per tracked unit: a "tv"/"movie"/"anime"/"manga"/"game" row plus
+    // a "season" and an "episode" row per watched episode, each carrying image
+    // URLs, notes and timestamps Kue never stores. Kue tracks series-level
+    // progress, so rows group by source+id (or title) and episodes are counted
+    // instead of imported one by one.
+    private sealed class YamtrackGroup
+    {
+        public string Title = string.Empty;
+        public string? MediaType;
+        public string? Status;
+        public int? Rating;
+        public int? Progress;
+        public string? Source;
+        public string? ExternalId;
+        public readonly HashSet<string> Episodes = new(StringComparer.OrdinalIgnoreCase);
+        public bool HasEpisodeRows;
+    }
+
+    private static List<ParsedEntry> ParseYamtrackCsv(string content)
+    {
+        var rows = SplitCsvRows(content);
+        if (rows.Count < 2) return [];
+
+        var headers = rows[0].Select(h => h.Trim().ToLowerInvariant()).ToList();
+
+        int Col(params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var idx = headers.IndexOf(name);
+                if (idx >= 0) return idx;
+            }
+            return -1;
+        }
+
+        var titleIdx = Col("title");
+        if (titleIdx < 0) return [];
+
+        var sourceIdx = Col("source");
+        var idIdx = Col("media_id");
+        var typeIdx = Col("media_type");
+        var statusIdx = Col("status");
+        var scoreIdx = Col("score");
+        var progressIdx = Col("progress");
+        var seasonIdx = Col("season_number");
+        var episodeIdx = Col("episode_number");
+
+        static string Cell(List<string> row, int idx) =>
+            idx >= 0 && idx < row.Count ? row[idx].Trim() : "";
+
+        var groups = new Dictionary<string, YamtrackGroup>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<string>();
+
+        foreach (var row in rows.Skip(1))
+        {
+            var title = Cell(row, titleIdx);
+            if (string.IsNullOrWhiteSpace(title)) continue;
+
+            var rawType = Cell(row, typeIdx).ToLowerInvariant();
+            var isUnitRow = rawType is "episode" or "season";
+            // Books and comics have no Kue media type; skip them rather than
+            // importing them as untitled noise.
+            var dbType = isUnitRow ? null : NormalizeDbType(rawType);
+            if (!isUnitRow && rawType.Length > 0 && dbType is null) continue;
+
+            var source = Cell(row, sourceIdx).ToLowerInvariant();
+            var externalId = Cell(row, idIdx);
+            var key = source.Length > 0 && externalId.Length > 0
+                ? $"{source}:{externalId}"
+                : title.ToLowerInvariant();
+
+            if (!groups.TryGetValue(key, out var group))
+            {
+                group = new YamtrackGroup
+                {
+                    Title = title,
+                    Source = source.Length > 0 ? source : null,
+                    ExternalId = externalId.Length > 0 ? externalId : null,
+                };
+                groups[key] = group;
+                order.Add(key);
+            }
+
+            var status = NormalizeStatus(Cell(row, statusIdx));
+            if (status is not null
+                && (group.Status is null || StatusRank(status) > StatusRank(group.Status)))
+            {
+                group.Status = status;
+            }
+
+            if (group.Rating is null && ParseLeadingNumber(Cell(row, scoreIdx)) is double score)
+            {
+                group.Rating = score > 10 ? Math.Max(1, (int)Math.Round(score / 10.0)) : (int)Math.Round(score);
+            }
+
+            if (ParseLeadingNumber(Cell(row, progressIdx)) is double progress)
+            {
+                group.Progress = Math.Max(group.Progress ?? 0, (int)Math.Round(progress));
+            }
+
+            if (isUnitRow)
+            {
+                group.HasEpisodeRows = true;
+                group.MediaType ??= NormalizeDbType("tv");
+                var episode = Cell(row, episodeIdx);
+                if (rawType == "episode" && episode.Length > 0)
+                {
+                    group.Episodes.Add($"{Cell(row, seasonIdx)}:{episode}");
+                }
+            }
+            else
+            {
+                group.MediaType ??= dbType;
+            }
+        }
+
+        var entries = new List<ParsedEntry>(order.Count);
+        foreach (var key in order)
+        {
+            var group = groups[key];
+            entries.Add(new ParsedEntry
+            {
+                Title = group.Title,
+                MediaType = group.MediaType,
+                Status = group.Status
+                    ?? (group.HasEpisodeRows || group.Episodes.Count > 0 ? "in_progress" : "planning"),
+                Progress = group.Episodes.Count > 0
+                    ? Math.Max(group.Progress ?? 0, group.Episodes.Count)
+                    : group.Progress,
+                Rating = group.Rating is >= 1 and <= 10 ? group.Rating : null,
+                ExternalSource = group.Source,
+                ExternalId = group.ExternalId,
+            });
+        }
+
+        return entries;
+    }
+
+    private static double? ParseLeadingNumber(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var digits = new string(raw.Trim().TakeWhile(c => char.IsDigit(c) || c == '.' || c == '-').ToArray());
+        return double.TryParse(digits, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var value)
+            && value >= 0
+            ? value
+            : null;
+    }
+
     private static List<ParsedEntry> ParseCsv(
         string content, Dictionary<string, string>? columnMapping, string? defaultType)
     {
@@ -609,17 +777,10 @@ public static class ImportParsing
 
             int? number(string key)
             {
-                var raw = Cell(key);
-                if (string.IsNullOrWhiteSpace(raw)) return null;
                 // "12/24", "8.5", "7 hrs" all reduce to their leading number.
-                var digits = new string(raw.Trim().TakeWhile(c => char.IsDigit(c) || c == '.' || c == '-').ToArray());
-                if (double.TryParse(digits, System.Globalization.NumberStyles.Any,
-                        System.Globalization.CultureInfo.InvariantCulture, out var value)
-                    && value >= 0)
-                {
-                    return (int)Math.Round(value);
-                }
-                return null;
+                return ParseLeadingNumber(Cell(key)) is double value
+                    ? (int)Math.Round(value)
+                    : null;
             }
 
             var score = number("score");
