@@ -7,7 +7,7 @@ public record ResetPasswordRequest(
     [EmailAddress(ErrorMessage = "Invalid email address")]
     string Email,
 
-    [Required(ErrorMessage = "Reset token is required")]
+    [Required(ErrorMessage = "Reset code is required")]
     string Token,
 
     [Required(ErrorMessage = "New password is required")]

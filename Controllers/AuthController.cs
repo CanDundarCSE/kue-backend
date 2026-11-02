@@ -26,20 +26,46 @@ public class AuthController : ControllerBase
 
     [HttpPost("register")]
     [EnableRateLimiting("auth")]
-    [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request, CancellationToken ct)
     {
-        try 
+        try
         {
             var response = await _authService.RegisterAsync(request, GetClientIp(), ct);
-            SetAuthCookies(response.AccessToken, response.RefreshToken);
-            return StatusCode(StatusCodes.Status201Created, response);
+            return StatusCode(StatusCodes.Status202Accepted, response);
         }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new MessageResponseDto(ex.Message));
         }
+    }
+
+    [HttpPost("verify-email")]
+    [EnableRateLimiting("auth")]
+    [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _authService.VerifyEmailAsync(request, GetClientIp(), ct);
+            SetAuthCookies(response.AccessToken, response.RefreshToken);
+            return Ok(response);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new MessageResponseDto(ex.Message));
+        }
+    }
+
+    [HttpPost("resend-verification")]
+    [EnableRateLimiting("auth")]
+    [ProducesResponseType(typeof(MessageResponseDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ResendVerification([FromBody] ResendVerificationRequest request, CancellationToken ct)
+    {
+        var response = await _authService.ResendVerificationAsync(request, ct);
+        return Ok(response);
     }
 
     [HttpPost("login")]
@@ -147,13 +173,13 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request, CancellationToken ct)
     {
         // Always the same status, body and message whether or not the account exists.
-        // The reset token is never part of this response in any environment: returning it
+        // The reset code is never part of this response in any environment: returning it
         // would let anyone take over an account by knowing its email address. It reaches
-        // the owner only through the link emailed by Brevo.
+        // the owner only through the email sent by Brevo.
         await _authService.ForgotPasswordAsync(request, ct);
 
         return Ok(new ForgotPasswordResponseDto(
-            "If an account with that email exists, a password reset link has been sent."
+            "If an account with that email exists, a password reset code has been sent."
         ));
     }
     [EnableRateLimiting("auth")]

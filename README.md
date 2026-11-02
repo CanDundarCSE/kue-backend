@@ -46,8 +46,9 @@ Built with .NET 10, C# 13, PostgreSQL, Entity Framework Core, and ASP.NET Core S
 - Authentication: Short-lived JWT access tokens with secure HttpOnly refresh token cookies.
 - Token rotation and RFC 6749 reuse detection (automatic session revocation on replay attacks).
 - Brute-force protection: IP-based Token Bucket rate limiting on authentication routes.
-- Password reset: single-use 256-bit tokens stored only as SHA-256 hashes with a one-hour expiry, delivered by transactional email (Brevo). The token is never part of any API response in any environment — it exists only inside the emailed link, so knowledge of an email address alone cannot grant a password reset.
-- Timing-safe password reset: reset mail is dispatched through a background queue so a known address is not measurably slower to respond than an unknown one, and a per-user cooldown suppresses repeated mail to a single account.
+- Password reset: single-use 8-character codes stored only as SHA-256 hashes with a 15-minute expiry, delivered by transactional email (Brevo). The code is never part of any API response in any environment, so knowledge of an email address alone cannot grant a password reset.
+- Email verification on signup: registrations stay pending in memory until the emailed code is verified, so unverified accounts never create database rows. Pending registrations and their codes expire after 15 minutes.
+- Timing-safe auth mail: verification and reset mail is dispatched through a background queue so a known address is not measurably slower to respond than an unknown one, and a per-address cooldown suppresses repeated messages.
 - Global exception handling middleware: sanitizes all unhandled server errors into standardized JSON to prevent stack trace or database structure leakage.
 - IDOR prevention: strict server-side ownership checks across library, list, rating, and notification actions.
 - Administrative controls: self-locking initial bootstrap endpoint (`/admin/bootstrap`), user role management, account suspension with ban reasons, and media catalog synchronization.
@@ -126,14 +127,10 @@ Configure your database connection, JWT settings, and external API keys in `apps
     "ClientId": "your_twitch_client_id",
     "ClientSecret": "your_twitch_client_secret"
   },
-  "App": {
-    "FrontendUrl": "http://localhost:3000"
-  },
   "Brevo": {
     "ApiKey": "your_brevo_api_key",
     "SenderEmail": "no-reply@yourdomain.com",
-    "SenderName": "Kue",
-    "PasswordResetTemplateId": ""
+    "SenderName": "Kue"
   }
 }
 ```
@@ -143,7 +140,7 @@ Configure your database connection, JWT settings, and external API keys in `apps
 > - **AniList:** Public GraphQL endpoint; no API key is required.
 > - **TMDB:** Obtain your API Key or Read Access Token from the [TMDB Developer Portal](https://www.themoviedb.org/settings/api).
 > - **IGDB:** Obtain your `ClientId` and `ClientSecret` from the [Twitch Developer Console](https://dev.twitch.tv/console). Kue automatically negotiates OAuth App Access Tokens via Client Credentials Flow and caches tokens in memory.
-> - **Brevo:** Obtain your API key from the Brevo dashboard under *SMTP & API*. The free plan includes 300 emails per day. `App:FrontendUrl` is the base URL that password reset links are built from, and it must match an origin allowed by the CORS policy. Setting `Brevo:PasswordResetTemplateId` switches the password reset email from the built-in HTML body to a Brevo drag-and-drop template; leave it empty to use the inline body.
+> - **Brevo:** Obtain your API key from the Brevo dashboard under *SMTP & API*. The free plan includes 300 emails per day. Kue sends verification and password-reset codes through Brevo using its inline HTML templates.
 >
 > **Brevo senders:** A sender must be verified in the Brevo dashboard before the API will accept it. Brevo single-sender verification lets you send to any recipient from a personal address, so no domain purchase is required. Note that a `gmail.com` sender cannot publish SPF or DKIM records, so Gmail, Yahoo, and Microsoft may filter these messages into spam. Authenticating a domain fixes that and is the recommended step before real users depend on password resets.
 >
@@ -160,7 +157,6 @@ Configure your database connection, JWT settings, and external API keys in `apps
 > dotnet user-secrets set "Tmdb:ApiKey" "your_tmdb_key"
 > dotnet user-secrets set "Igdb:ClientId" "your_client_id"
 > dotnet user-secrets set "Igdb:ClientSecret" "your_client_secret"
-> dotnet user-secrets set "App:FrontendUrl" "http://localhost:3000"
 > dotnet user-secrets set "Brevo:ApiKey" "xkeysib-your_brevo_api_key"
 > dotnet user-secrets set "Brevo:SenderEmail" "your_verified_sender@email.com"
 > ```

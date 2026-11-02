@@ -40,7 +40,7 @@ builder.Services.AddScoped<Kue.Api.Services.Playback.IPlaybackTrackingService, K
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddBackgroundTaskQueue();
 builder.Services.AddHostedService<TokenCleanupBackgroundService>();
-builder.Services.AddBrevoEmail(builder.Configuration);
+builder.Services.AddBrevoEmail();
 
 // ---------------------------------------------------------------------
 // 3. Security & Middleware

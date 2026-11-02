@@ -5,6 +5,7 @@ using System.Text;
 using Kue.Api.Constants;
 using Kue.Api.Data;
 using Kue.Api.Dtos.Auth;
+using Kue.Api.Dtos.Common;
 using Kue.Api.Entities;
 using Kue.Api.Services.Background;
 using Kue.Api.Services.Email;
@@ -17,10 +18,22 @@ namespace Kue.Api.Services;
 
 public class AuthService : IAuthService
 {
-    private const int PasswordResetTokenLifetimeHours = 1;
-    private const int PasswordResetCooldownSeconds = 60;
+    private const int AuthCodeLifetimeMinutes = 15;
+    private const int AuthCodeCooldownSeconds = 60;
+    private const int MaxVerificationAttempts = 10;
+    private const string AuthCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    private const int AuthCodeLength = 8;
     private const int DefaultRotationGracePeriodSeconds = 30;
     private const int MaxRotationChainHops = 10;
+
+    private sealed record PendingRegistration(
+        string Username,
+        string Email,
+        string PasswordHash,
+        DateTime TermsAcceptedAt,
+        string TermsVersion,
+        string CodeHash,
+        DateTime ExpiresAt);
 
     private readonly AppDbContext _context;
     private readonly IConfiguration _configuration;
@@ -52,7 +65,7 @@ public class AuthService : IAuthService
             : DefaultRotationGracePeriodSeconds;
     }
 
-    public async Task<AuthResponseDto> RegisterAsync(RegisterRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
+    public async Task<MessageResponseDto> RegisterAsync(RegisterRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
     {
         // Consent to the Privacy Policy and Terms of Service is mandatory. Reject
         // before any account work so a non-consenting signup can never persist.
@@ -75,40 +88,142 @@ public class AuthService : IAuthService
             throw new InvalidOperationException("Username must be between 3 and 50 characters.");
         }
 
-        // 1. Check if user already exists (generic message to prevent user enumeration).
-        // Username comparison is case-insensitive so "Alice" and "alice" can't
-        // both exist; the unique lower() index below race-proofs this check.
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
         var normalizedUsername = username.ToLowerInvariant();
+
+        // Generic message prevents user enumeration. Username comparison is
+        // case-insensitive so "Alice" and "alice" cannot both exist.
         if (await _context.Users.AnyAsync(
-            u => u.Email == request.Email || u.Username.ToLower() == normalizedUsername,
+            u => u.Email.ToLower() == normalizedEmail || u.Username.ToLower() == normalizedUsername,
             cancellationToken))
         {
             throw new InvalidOperationException("Registration failed. Please try a different email or username.");
         }
 
-        // 2. Create new user
+        // Keep the signup in memory until the email code is verified. No user row
+        // exists yet, so unverified bot signups cannot fill the database.
+        var code = GenerateAuthCode();
+        var now = DateTime.UtcNow;
+        var pending = new PendingRegistration(
+            username,
+            request.Email.Trim(),
+            _passwordHasher.HashPassword(null!, request.Password),
+            now,
+            LegalVersion.Current,
+            HashToken(NormalizeAuthCode(code)),
+            now.AddMinutes(AuthCodeLifetimeMinutes));
+
+        var cacheKey = PendingRegistrationKey(normalizedEmail);
+        _memoryCache.Set(cacheKey, pending, pending.ExpiresAt);
+        _memoryCache.Set(VerificationCooldownKey(normalizedEmail), true, TimeSpan.FromSeconds(AuthCodeCooldownSeconds));
+        _memoryCache.Remove(VerificationAttemptsKey(normalizedEmail));
+
+        await _backgroundTaskQueue.EnqueueAsync(
+            (serviceProvider, ct) => serviceProvider.GetRequiredService<IEmailService>()
+                .SendEmailVerificationCodeAsync(pending.Email, pending.Username, code, ct),
+            cancellationToken);
+
+        return new MessageResponseDto("Check your email for a verification code.");
+    }
+
+    public async Task<AuthResponseDto> VerifyEmailAsync(VerifyEmailRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var cacheKey = PendingRegistrationKey(normalizedEmail);
+
+        if (!_memoryCache.TryGetValue(cacheKey, out PendingRegistration? pending) || pending is null)
+        {
+            throw new InvalidOperationException("Invalid or expired verification code.");
+        }
+
+        if (pending.ExpiresAt <= DateTime.UtcNow)
+        {
+            _memoryCache.Remove(cacheKey);
+            throw new InvalidOperationException("Invalid or expired verification code.");
+        }
+
+        var submittedHash = HashToken(NormalizeAuthCode(request.Code));
+        if (!FixedTimeEquals(pending.CodeHash, submittedHash))
+        {
+            RecordVerificationFailure(normalizedEmail, cacheKey);
+            throw new InvalidOperationException("Invalid or expired verification code.");
+        }
+
+        // Re-check uniqueness at creation time: another pending signup could
+        // have claimed the same username or email while this one waited.
+        var normalizedUsername = pending.Username.ToLowerInvariant();
+        if (await _context.Users.AnyAsync(
+            u => u.Email.ToLower() == normalizedEmail || u.Username.ToLower() == normalizedUsername,
+            cancellationToken))
+        {
+            _memoryCache.Remove(cacheKey);
+            throw new InvalidOperationException("Registration failed. Please try a different email or username.");
+        }
+
+        var now = DateTime.UtcNow;
         var user = new User
         {
-            Username = username,
-            Email = request.Email,
+            Username = pending.Username,
+            Email = pending.Email,
             KueId = await GenerateUniqueKueIdAsync(cancellationToken),
-            PasswordHash = _passwordHasher.HashPassword(null!, request.Password),
-            CreatedAt = DateTime.UtcNow,
+            PasswordHash = pending.PasswordHash,
+            CreatedAt = now,
             IsTermsAccepted = true,
-            TermsAcceptedAt = DateTime.UtcNow,
-            TermsVersion = LegalVersion.Current
+            TermsAcceptedAt = pending.TermsAcceptedAt,
+            TermsVersion = pending.TermsVersion
         };
 
         _context.Users.Add(user);
         await _context.SaveChangesAsync(cancellationToken);
 
-        // 3. Prepare response DTO & save refresh token to DB
+        _memoryCache.Remove(cacheKey);
+        _memoryCache.Remove(VerificationAttemptsKey(normalizedEmail));
+        _memoryCache.Remove(VerificationCooldownKey(normalizedEmail));
+
         var userDto = MapToUserDto(user);
         var response = await GenerateAuthResponseAsync(userDto);
         await SaveRefreshTokenAsync(user.Id, response.RefreshToken!, ipAddress, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
 
         return response;
+    }
+
+    public async Task<MessageResponseDto> ResendVerificationAsync(ResendVerificationRequest request, CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var cacheKey = PendingRegistrationKey(normalizedEmail);
+
+        // Always return the same message so callers cannot probe pending signups.
+        const string response = "If a pending registration exists, a new verification code has been sent.";
+
+        if (!_memoryCache.TryGetValue(cacheKey, out PendingRegistration? pending) || pending is null)
+        {
+            return new MessageResponseDto(response);
+        }
+
+        if (_memoryCache.TryGetValue(VerificationCooldownKey(normalizedEmail), out _))
+        {
+            return new MessageResponseDto(response);
+        }
+
+        var code = GenerateAuthCode();
+        var now = DateTime.UtcNow;
+        pending = pending with
+        {
+            CodeHash = HashToken(NormalizeAuthCode(code)),
+            ExpiresAt = now.AddMinutes(AuthCodeLifetimeMinutes)
+        };
+
+        _memoryCache.Set(cacheKey, pending, pending.ExpiresAt);
+        _memoryCache.Set(VerificationCooldownKey(normalizedEmail), true, TimeSpan.FromSeconds(AuthCodeCooldownSeconds));
+        _memoryCache.Remove(VerificationAttemptsKey(normalizedEmail));
+
+        await _backgroundTaskQueue.EnqueueAsync(
+            (serviceProvider, ct) => serviceProvider.GetRequiredService<IEmailService>()
+                .SendEmailVerificationCodeAsync(pending.Email, pending.Username, code, ct),
+            cancellationToken);
+
+        return new MessageResponseDto(response);
     }
 
     public async Task<AuthResponseDto> LoginAsync(LoginRequest request, string? ipAddress = null, CancellationToken cancellationToken = default)
@@ -441,7 +556,6 @@ public class AuthService : IAuthService
 
         // Rate limiting caps requests per IP, but not repeated mail to a single
         // victim reached from many addresses. Suppress duplicates for a short window.
-        // Checked before the token is rotated so a live emailed link is not invalidated.
         var cooldownKey = $"password_reset_cooldown_{user.Id}";
         if (_memoryCache.TryGetValue(cooldownKey, out _))
         {
@@ -449,37 +563,20 @@ public class AuthService : IAuthService
             return;
         }
 
-        var tokenBytes = RandomNumberGenerator.GetBytes(32);
-        var resetToken = Convert.ToHexString(tokenBytes);
-        // Store only a hash of the reset token so a DB leak cannot be used to reset passwords
-        user.PasswordResetToken = HashToken(resetToken);
-        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddHours(PasswordResetTokenLifetimeHours);
+        var code = GenerateAuthCode();
+        // Store only a hash of the code so a database leak cannot be used to reset passwords.
+        user.PasswordResetToken = HashToken(NormalizeAuthCode(code));
+        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddMinutes(AuthCodeLifetimeMinutes);
 
         await _context.SaveChangesAsync(cancellationToken);
 
-        // Set before the configuration check below so a misconfigured deployment cannot be
-        // used to rotate tokens on every request.
-        _memoryCache.Set(cooldownKey, true, TimeSpan.FromSeconds(PasswordResetCooldownSeconds));
-
-        var frontendUrl = _configuration["App:FrontendUrl"];
-        if (string.IsNullOrWhiteSpace(frontendUrl))
-        {
-            // Logged, never thrown. Throwing here would return 500 only when the account
-            // exists and 200 otherwise, which is a user enumeration oracle. The token is
-            // deliberately discarded: with no link to deliver it must never be returned.
-            _logger.LogError("App:FrontendUrl is missing in configuration; password reset email was not sent.");
-            return;
-        }
-
-        // Convert.ToHexString only emits [0-9A-F], so the token needs no URL encoding.
-        var resetLink = $"{frontendUrl.TrimEnd('/')}/reset-password"
-                        + $"?token={resetToken}&email={Uri.EscapeDataString(user.Email)}";
+        _memoryCache.Set(cooldownKey, true, TimeSpan.FromSeconds(AuthCodeCooldownSeconds));
 
         // Handed to the background queue rather than awaited, so a slow or failing mail
         // provider cannot make this branch measurably slower than the account-not-found one.
         await _backgroundTaskQueue.EnqueueAsync(
             (serviceProvider, ct) => serviceProvider.GetRequiredService<IEmailService>()
-                .SendPasswordResetEmailAsync(user.Email, user.Username, resetLink, ct),
+                .SendPasswordResetCodeEmailAsync(user.Email, user.Username, code, ct),
             cancellationToken);
     }
 
@@ -487,14 +584,14 @@ public class AuthService : IAuthService
     {
         var normalizedEmail = request.Email.Trim().ToLowerInvariant();
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail, cancellationToken);
-        var requestTokenHash = HashToken(request.Token ?? string.Empty);
+        var requestTokenHash = HashToken(NormalizeAuthCode(request.Token ?? string.Empty));
         if (user is null
             || string.IsNullOrWhiteSpace(user.PasswordResetToken)
             || !FixedTimeEquals(user.PasswordResetToken, requestTokenHash)
             || user.PasswordResetTokenExpiresAt is null
             || user.PasswordResetTokenExpiresAt <= DateTime.UtcNow)
         {
-            throw new InvalidOperationException("Invalid or expired password reset token.");
+            throw new InvalidOperationException("Invalid or expired password reset code.");
         }
 
         user.PasswordHash = _passwordHasher.HashPassword(user, request.NewPassword);
@@ -503,12 +600,17 @@ public class AuthService : IAuthService
 
         // Revoke active sessions
         var now = DateTime.UtcNow;
-        await _context.RefreshTokens
-            .Where(r => r.UserId == user.Id && !r.IsRevoked)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.IsRevoked, true)
-                .SetProperty(r => r.RevokedAtUtc, now)
-                .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.PasswordReset), cancellationToken);
+        if (await _context.RefreshTokens.AnyAsync(
+            r => r.UserId == user.Id && !r.IsRevoked,
+            cancellationToken))
+        {
+            await _context.RefreshTokens
+                .Where(r => r.UserId == user.Id && !r.IsRevoked)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.IsRevoked, true)
+                    .SetProperty(r => r.RevokedAtUtc, now)
+                    .SetProperty(r => r.RevocationReason, RefreshTokenRevocationReason.PasswordReset), cancellationToken);
+        }
 
         await _context.SaveChangesAsync(cancellationToken);
     }
@@ -650,6 +752,50 @@ public class AuthService : IAuthService
     /// </summary>
     private static readonly string DummyPasswordHash =
         new PasswordHasher<User>().HashPassword(null!, "DummyPasswordForTimingSafety!");
+
+    private static string GenerateAuthCode()
+    {
+        var code = new char[AuthCodeLength];
+        for (var i = 0; i < code.Length; i++)
+        {
+            code[i] = AuthCodeAlphabet[RandomNumberGenerator.GetInt32(AuthCodeAlphabet.Length)];
+        }
+
+        var raw = new string(code);
+        return $"{raw[..4]}-{raw[4..]}";
+    }
+
+    private static string NormalizeAuthCode(string code)
+    {
+        var buffer = new StringBuilder(code.Length);
+        foreach (var character in code)
+        {
+            if (char.IsLetterOrDigit(character)) buffer.Append(char.ToUpperInvariant(character));
+        }
+        return buffer.ToString();
+    }
+
+    private static string PendingRegistrationKey(string normalizedEmail) =>
+        $"pending_registration_{normalizedEmail}";
+
+    private static string VerificationCooldownKey(string normalizedEmail) =>
+        $"pending_registration_cooldown_{normalizedEmail}";
+
+    private static string VerificationAttemptsKey(string normalizedEmail) =>
+        $"pending_registration_attempts_{normalizedEmail}";
+
+    private void RecordVerificationFailure(string normalizedEmail, string cacheKey)
+    {
+        var attemptsKey = VerificationAttemptsKey(normalizedEmail);
+        var attempts = _memoryCache.Get<int>(attemptsKey) + 1;
+        _memoryCache.Set(attemptsKey, attempts, TimeSpan.FromMinutes(AuthCodeLifetimeMinutes));
+
+        if (attempts >= MaxVerificationAttempts)
+        {
+            _memoryCache.Remove(cacheKey);
+            _memoryCache.Remove(attemptsKey);
+        }
+    }
 
     private static string HashToken(string token)
     {
