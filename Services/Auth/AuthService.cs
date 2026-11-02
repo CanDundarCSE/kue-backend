@@ -593,6 +593,7 @@ public class AuthService : IAuthService
             Username = user.Username,
             Email = user.Email,
             KueId = user.KueId,
+            AvatarId = user.AvatarId,
             Bio = user.Bio,
             Roles = user.Roles ?? new List<string> { "User" },
             TermsVersion = user.TermsVersion
